@@ -12,7 +12,7 @@
     "base_url": "https://api.deepseek.com/v1",
     "model": "deepseek-chat"
   },
-  "freeze_timeout_seconds": 30,
+  "freeze_timeout_seconds": 20,
   "topk_default": 2,
   "context_threshold": 150000,
   "idle_timeout": 30,

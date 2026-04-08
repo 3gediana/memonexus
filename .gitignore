@@ -119,4 +119,11 @@ strict_benchmark_report.json
 # 知识库资料（仅代码，不包含个人资料）
 知识库/content/
 知识库/资料/
-!知识库/资料/README.md
+!知识库/资料/.gitkeep
+
+# 知识库运行时索引（自动生成）
+知识库/.chunks/
+知识库/.index/
+知识库/.metadata/
+知识库/.models/
+!知识库/.models/.gitkeep
