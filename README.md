@@ -52,7 +52,7 @@ cp 记忆库/config.json.example 记忆库/config.json
 cd 记忆库 && python -m uvicorn src.api.server:app --reload
 ```
 
-### 4. API 调用
+## Agent 调用示例
 
 ```python
 import requests
@@ -72,6 +72,16 @@ requests.post("http://localhost:8000/api/recall", json={
     "query": "用户偏好什么颜色"
 })
 ```
+
+## API 端点
+
+| 端点 | 说明 |
+|------|------|
+| `POST /api/dialogue/clear` | 触发记忆存储 |
+| `POST /api/recall` | 记忆检索 |
+| `POST /api/keys` | 创建 Key |
+| `GET /api/memories/{key}` | 获取 Key 下的记忆 |
+| `GET /api/graph/{instance}` | 获取记忆图谱 |
 
 ## 技术栈
 
