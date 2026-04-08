@@ -1,0 +1,15 @@
+{
+  "modelCache": "G:/ai/paddleocr-models",
+  "parseflowMcpPath": "D:/claude code/parseflow-mcp/packages/mcp-server/dist/index.js",
+  "ocr": {
+    "enabled": true,
+    "provider": "paddleocr",
+    "pythonScript": "G:/知识库/.scripts/core/ocr-helper.py",
+    "pythonPath": "G:/ai/python11/python.exe",
+    "modelPath": "G:/ai/paddleocr-models/whl"
+  },
+  "indexer": {
+    "concurrency": 5,
+    "batchSize": 10
+  }
+}

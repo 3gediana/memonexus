@@ -1,26 +1,54 @@
 {
+  // ========== 实例配置 ==========
   "current_instance": "default",
+
+  // 实例列表（可配置多实例隔离）
   "instances": {
     "default": {
+      // 主数据库路径（记忆数据）
       "db_path": "instances/default/memories.db",
+      // 子数据库路径（关联图、聚类等）
       "sub_db_path": "instances/default/sub.db",
+      // Key 存储目录
       "keys_dir": "instances/default/keys"
     }
   },
+
+  // ========== LLM 配置 ==========
+  // 支持 OpenAI 兼容 API（DeepSeek、硅基流动等）
   "deepseek": {
-    "api_key": "YOUR_DEEPSEEK_API_KEY",
+    "api_key": "YOUR_DEEPSEEK_API_KEY",  // DeepSeek API Key
     "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat"
+    "model": "deepseek-chat"  // 或 deepseek-coder
   },
+
+  // ========== 冻结策略 ==========
+  // 对话结束多少秒后触发记忆存储
   "freeze_timeout_seconds": 20,
+
+  // ========== 检索配置 ==========
+  // 默认返回 Top-K 条记忆
   "topk_default": 2,
+  // 上下文窗口上限（token）
   "context_threshold": 150000,
-  "idle_timeout": 30,
+  // 单次召回最大记忆条数
   "max_memories_per_recall": 10,
+
+  // ========== 会话配置 ==========
+  // 空闲超时（秒），超时后自动冻结
+  "idle_timeout": 30,
+
+  // ========== 聚类配置 ==========
+  // 触发合并的最小关联数
   "cluster_merge_trigger_count": 3,
+  // 相似度阈值（0~1），低于此值不合并
   "cluster_similarity_threshold": 0.65,
+
+  // ========== 知识库配置（可选）==========
+  // Ollama 本地模型 API
   "kb": {
     "ollama_api": "http://localhost:11434/api/generate",
+    // qwen2.5 或其他本地模型
     "ollama_model": "qwen2.5"
   }
 }

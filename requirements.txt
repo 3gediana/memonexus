@@ -1,30 +1,37 @@
-# Web Framework
-fastapi>=0.100.0
-uvicorn>=0.23.0
-starlette>=0.27.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
+# Memonexus 依赖说明
+# Python >= 3.10, 仅支持 macOS / Linux / Windows 10+
 
-# LLM
-openai>=1.0.0
+# ========== Web 框架 ==========
+fastapi>=0.100.0          # Web 框架
+uvicorn>=0.23.0           # ASGI 服务器
+starlette>=0.27.0         # HTTP 工具集
+pydantic>=2.0.0           # 数据验证
+pydantic-settings>=2.0.0  # 配置管理
 
-# Database
-sqlite3>=3.40.0
+# ========== LLM 接口 ==========
+openai>=1.0.0             # OpenAI 兼容 API 调用
 
-# Vector & ML
-numpy>=1.24.0
-transformers>=4.30.0
-torch>=2.0.0
-onnxruntime>=1.15.0
+# ========== 数据库 ==========
+sqlite3>=3.40.0           # Python 内置，无需安装
 
-# HTTP
-requests>=2.31.0
-httpx>=0.24.0
+# ========== 向量 & ML ==========
+numpy>=1.24.0             # 数值计算
+transformers>=4.30.0      # Hugging Face Transformers
+torch>=2.0.0               # PyTorch
+onnxruntime>=1.15.0        # ONNX 推理引擎
 
-# DevTools
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-ruff>=0.1.0
+# ========== HTTP 请求 ==========
+requests>=2.31.0          # HTTP 客户端
+httpx>=0.24.0             # 异步 HTTP
 
-# Process management
-psutil>=5.9.0
+# ========== 开发工具 ==========
+pytest>=7.0.0             # 单元测试
+pytest-asyncio>=0.21.0    # 异步测试
+ruff>=0.1.0               # 代码检查
+
+# ========== 进程管理 ==========
+psutil>=5.9.0             # 系统进程
+
+# ========== 可选依赖 ==========
+# paddleocr>=2.7.0         # PDF/图片 OCR（知识库用，如不使用可跳过）
+# accelerate>=0.20.0      # 加速推理（如使用 GPU）

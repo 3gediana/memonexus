@@ -1,0 +1,362 @@
+/**
+ * 备份时间：2026-02-25
+ * 原始文件：G:\知识库\.scripts\core\chunker.ts
+ * 说明：原始分块实现（固定字符数 + 简单边界检测）
+ */
+
+/**
+ * 智能分块模块
+ * 支持按文档结构、内容类型、语义相似度进行分块
+ *
+ * 分块优先级：
+ * 1. 代码块（```code```）- 保持完整
+ * 2. 表格（Markdown/简单表格）- 保持完整
+ * 3. 公式（LaTeX）- 保持完整
+ * 4. 标题层级 - 按章节分块
+ * 5. 段落边界 - 优先在段落处分块
+ * 6. 句子边界 - 其次在句子处分块
+ */
+
+export interface ChunkOptions {
+  // 基础配置
+  chunkSize: number;           // 目标块大小（字符数）
+  minChunkSize: number;        // 最小块大小
+  maxChunkSize: number;        // 最大块大小
+  overlap: number;             // 重叠字符数
+
+  // 内容类型感知
+  detectCodeBlocks: boolean;   // 检测代码块
+  detectTables: boolean;       // 检测表格
+  detectFormulas: boolean;     // 检测公式
+  detectHeadings: boolean;     // 检测标题层级
+
+  // 边界处理
+  respectBoundary: boolean;
+  keepParagraphTogether: boolean;  // 尽量保持段落完整
+}
+
+export interface Chunk {
+  id: string;
+  text: string;
+  index: number;
+  startPos: number;
+  endPos: number;
+  page?: number;
+  keywords?: string[];
+  vector?: number[];
+
+  // 新增：分块元信息
+  blockType?: 'code' | 'table' | 'formula' | 'heading' | 'paragraph' | 'mixed';
+  headingLevel?: number;       // 标题层级（1-6）
+  headingText?: string;        // 所属标题文本
+  confidence?: number;         // 分块置信度
+}
+
+const DEFAULTS: ChunkOptions = {
+  chunkSize: 1000,
+  minChunkSize: 200,
+  maxChunkSize: 2000,
+  overlap: 150,
+  detectCodeBlocks: true,
+  detectTables: true,
+  detectFormulas: true,
+  detectHeadings: true,
+  respectBoundary: true,
+  keepParagraphTogether: true,
+};
+
+// 内容块结构
+interface ContentBlock {
+  type: 'code' | 'table' | 'formula' | 'heading' | 'text';
+  start: number;
+  end: number;
+  content: string;
+  level?: number;      // 标题层级
+  metadata?: Record<string, any>;
+}
+
+export class Chunker {
+  private opts: ChunkOptions;
+
+  constructor(options?: Partial<ChunkOptions>) {
+    this.opts = { ...DEFAULTS, ...options };
+  }
+
+  /**
+   * 智能分块主入口
+   */
+  split(text: string, fingerprint: string): Chunk[] {
+    // 1. 提取结构化内容块
+    const blocks = this.extractStructuredBlocks(text);
+
+    // 2. 对纯文本部分进行智能分块
+    const chunks: Chunk[] = [];
+    let idx = 1;
+    let currentHeading: { level: number; title: string } = { level: 0, title: '' };
+
+    for (const block of blocks) {
+      if (block.type === 'heading') {
+        // 更新当前标题
+        currentHeading = { level: block.level || 0, title: block.metadata?.title || '' };
+        chunks.push({
+          id: `${fingerprint}-${idx.toString().padStart(3, "0")}`,
+          text: block.content,
+          index: idx,
+          startPos: block.start,
+          endPos: block.end,
+          blockType: block.type,
+          headingLevel: block.level,
+        });
+        idx++;
+      } else if (block.type !== 'text') {
+        // 结构化内容保持完整，继承当前标题
+        chunks.push({
+          id: `${fingerprint}-${idx.toString().padStart(3, "0")}`,
+          text: block.content,
+          index: idx,
+          startPos: block.start,
+          endPos: block.end,
+          blockType: block.type,
+          headingLevel: currentHeading.level,
+          headingText: currentHeading.title,
+        });
+        idx++;
+      } else {
+        // 普通文本使用智能分块，继承当前标题
+        const textChunks = this.smartSplitText(
+          block.content,
+          block.start,
+          fingerprint,
+          idx,
+          currentHeading.level,
+          currentHeading.title
+        );
+        chunks.push(...textChunks);
+        idx += textChunks.length;
+      }
+    }
+
+    return chunks;
+  }
+
+  /**
+   * 提取结构化内容块（代码、表格、公式、标题）
+   */
+  private extractStructuredBlocks(text: string): ContentBlock[] {
+    const blocks: ContentBlock[] = [];
+    const len = text.length;
+    let pos = 0;
+
+    // 收集所有结构化块的起始位置
+    const allMatches: Array<{block: ContentBlock; priority: number}> = [];
+
+    // 查找所有代码块
+    if (this.opts.detectCodeBlocks) {
+      const codeRegex = /```(\w*)\n([\s\S]*?)```/g;
+      let match;
+      while ((match = codeRegex.exec(text)) !== null) {
+        allMatches.push({
+          priority: 1,
+          block: {
+            type: 'code',
+            start: match.index,
+            end: match.index + match[0].length,
+            content: match[0],
+            metadata: { language: match[1] || 'unknown' },
+          }
+        });
+      }
+    }
+
+    // 查找所有表格
+    if (this.opts.detectTables) {
+      const tableRegex = /(\|[^\n]+\|\n)+\|[-:\s|]+\|(\n\|[^\n]+\|)*/g;
+      let match;
+      while ((match = tableRegex.exec(text)) !== null) {
+        allMatches.push({
+          priority: 2,
+          block: {
+            type: 'table',
+            start: match.index,
+            end: match.index + match[0].length,
+            content: match[0],
+          }
+        });
+      }
+    }
+
+    // 查找所有公式
+    if (this.opts.detectFormulas) {
+      // 行间公式 $$...$$
+      const displayFormulaRegex = /\$\$([\s\S]*?)\$\$/g;
+      let match;
+      while ((match = displayFormulaRegex.exec(text)) !== null) {
+        allMatches.push({
+          priority: 3,
+          block: {
+            type: 'formula',
+            start: match.index,
+            end: match.index + match[0].length,
+            content: match[0],
+          }
+        });
+      }
+    }
+
+    // 查找所有标题
+    if (this.opts.detectHeadings) {
+      const headingRegex = /^(#{1,6})\s+(.+)$/gm;
+      let match;
+      while ((match = headingRegex.exec(text)) !== null) {
+        allMatches.push({
+          priority: 4,
+          block: {
+            type: 'heading',
+            start: match.index,
+            end: match.index + match[0].length,
+            content: match[0],
+            level: match[1].length,
+            metadata: { title: match[2] },
+          }
+        });
+      }
+    }
+
+    // 按起始位置排序
+    allMatches.sort((a, b) => a.block.start - b.block.start);
+
+    // 移除重叠的块（保留优先级高的）
+    const filtered: typeof allMatches = [];
+    let lastEnd = -1;
+
+    for (const item of allMatches) {
+      if (item.block.start >= lastEnd) {
+        filtered.push(item);
+        lastEnd = item.block.end;
+      }
+    }
+
+    // 生成最终的块列表
+    pos = 0;
+    for (const item of filtered) {
+      const block = item.block;
+
+      // 添加之前的纯文本
+      if (block.start > pos) {
+        blocks.push({
+          type: 'text',
+          start: pos,
+          end: block.start,
+          content: text.slice(pos, block.start),
+        });
+      }
+
+      blocks.push(block);
+      pos = block.end;
+    }
+
+    // 添加剩余的纯文本
+    if (pos < len) {
+      blocks.push({
+        type: 'text',
+        start: pos,
+        end: len,
+        content: text.slice(pos),
+      });
+    }
+
+    return blocks;
+  }
+
+  /**
+   * 智能分割纯文本
+   */
+  private smartSplitText(
+    text: string,
+    offset: number,
+    fingerprint: string,
+    startIdx: number,
+    headingLevel: number,
+    headingText: string
+  ): Chunk[] {
+    const chunks: Chunk[] = [];
+    const { chunkSize, minChunkSize, overlap, respectBoundary } = this.opts;
+
+    let pos = 0;
+    let idx = startIdx;
+
+    while (pos < text.length) {
+      let end = Math.min(pos + chunkSize, text.length);
+
+      // 如果接近末尾，扩展到结束
+      const remaining = text.length - end;
+      if (remaining < minChunkSize) {
+        end = text.length;
+      } else if (respectBoundary) {
+        // 找最佳断点
+        end = this.findBestBreakPoint(text, pos, end);
+      }
+
+      const chunkText = text.slice(pos, end);
+      if (chunkText.trim().length > 0) {
+        chunks.push({
+          id: `${fingerprint}-${idx.toString().padStart(3, "0")}`,
+          text: chunkText,
+          index: idx,
+          startPos: offset + pos,
+          endPos: offset + end,
+          blockType: 'paragraph',
+          headingLevel,
+          headingText,
+        });
+        idx++;
+      }
+
+      pos = end - overlap;
+      if (pos <= pos) pos = end; // 防死循环
+    }
+
+    return chunks;
+  }
+
+  /**
+   * 寻找最佳断点位置
+   */
+  private findBestBreakPoint(text: string, start: number, end: number): number {
+    // 优先级 1: 段落边界
+    const paraBreak = text.lastIndexOf('\n\n', end);
+    if (paraBreak > start + 50) return paraBreak + 2;
+
+    // 优先级 2: 句子边界
+    const sentBreak = Math.max(
+      text.lastIndexOf('。', end),
+      text.lastIndexOf('！', end),
+      text.lastIndexOf('？', end),
+      text.lastIndexOf('.', end),
+      text.lastIndexOf('!', end),
+      text.lastIndexOf('?', end),
+      text.lastIndexOf('\n', end),
+      text.lastIndexOf(';', end),
+      text.lastIndexOf(';', end),
+    );
+    if (sentBreak > start + 20) return sentBreak + 1;
+
+    // 优先级 3: 空格边界（英文）
+    const spaceBreak = text.lastIndexOf(' ', end);
+    if (spaceBreak > start + 20) return spaceBreak;
+
+    // 没有合适的边界，强制切断
+    return end;
+  }
+
+  /**
+   * 批量分块
+   */
+  splitBatch(texts: Map<string, string>): Map<string, Chunk[]> {
+    const result = new Map<string, Chunk[]>();
+    for (const [fingerprint, text] of texts) {
+      result.set(fingerprint, this.split(text, fingerprint));
+    }
+    return result;
+  }
+}

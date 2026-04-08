@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "node",
+      "args": [
+        "D:/claude-code/memory-assistant/知识库/.scripts/dist/core/mcp-server.js"
+      ]
+    }
+  }
+}

@@ -1,0 +1,103 @@
+/**
+ * 备份时间：2026-02-25
+ * 原始文件：G:\知识库\.scripts\core\keyword-index.ts
+ * 说明：原始中文分词实现（Character-based N-gram）
+ */
+
+import * as fs from "fs";
+import * as path from "path";
+import type { Chunk } from "./chunker";
+import { KeywordStore } from "./database";
+
+// 停用词表
+const STOP_WORDS = new Set([
+  "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都",
+  "一", "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会",
+  "着", "没有", "看", "好", "自己", "这", "那", "但", "与", "及",
+  "the", "a", "an", "is", "are", "was", "were", "be", "been",
+  "have", "has", "had", "do", "does", "did", "will", "would",
+  "could", "should", "may", "might", "of", "in", "on", "at",
+  "to", "for", "with", "by", "from", "as", "or", "and", "not",
+]);
+
+export class KeywordIndexer {
+  private store: KeywordStore;
+  // 内存缓存，批量写入
+  private buffer: { word: string; chunkId: string }[] = [];
+
+  constructor() {
+    this.store = new KeywordStore();
+  }
+
+  extract(text: string): string[] {
+    const words = new Set<string>();
+
+    // 英文词
+    for (const w of text.toLowerCase().split(/[^a-z]+/)) {
+      if (w.length >= 2 && w.length <= 20 && !STOP_WORDS.has(w)) words.add(w);
+    }
+
+    // 中文 n-gram（2、3 字）
+    const cjk = text.replace(/[^\u4e00-\u9fff]/g, " ");
+    const segs = cjk.split(/\s+/).filter(Boolean);
+    for (const seg of segs) {
+      for (let n = 2; n <= 3; n++) {
+        for (let i = 0; i <= seg.length - n; i++) {
+          const w = seg.slice(i, i + n);
+          if (!STOP_WORDS.has(w)) words.add(w);
+        }
+      }
+    }
+
+    return Array.from(words);
+  }
+
+  add(chunkId: string, text: string): void {
+    const keywords = this.extract(text);
+    for (const word of keywords) {
+      this.buffer.push({ word, chunkId });
+    }
+  }
+
+  addBatch(chunks: Chunk[]): void {
+    for (const chunk of chunks) {
+      const keywords = this.extract(chunk.text);
+      for (const word of keywords) {
+        this.buffer.push({ word, chunkId: chunk.id });
+      }
+    }
+    this.flush();
+  }
+
+  search(query: string): string[] {
+    const keywords = this.extract(query);
+    if (keywords.length === 0) return [];
+
+    // 每个词的命中集合
+    const sets = keywords.map(word => {
+      return new Set(this.store.search(word));
+    });
+
+    // TF 近似：按出现词数排序
+    const scoreMap = new Map<string, number>();
+    for (const set of sets) {
+      for (const id of set) {
+        scoreMap.set(id, (scoreMap.get(id) ?? 0) + 1);
+      }
+    }
+
+    return Array.from(scoreMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => id);
+  }
+
+  remove(chunkId: string): void {
+    this.store.remove(chunkId);
+  }
+
+  flush(): void {
+    if (this.buffer.length === 0) return;
+    this.store.addBatch(this.buffer);
+    this.buffer = [];
+  }
+}
