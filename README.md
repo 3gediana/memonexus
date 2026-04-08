@@ -81,17 +81,35 @@ memonexus/
 ### 1. 安装依赖
 
 ```bash
+# Python 后端依赖
 pip install -r requirements.txt
+
+# 核心依赖说明：
+# - fastapi + uvicorn: Web 服务框架
+# - openai: LLM 接口调用
+# - transformers + torch + onnxruntime: 本地模型推理
+# - numpy: 数值计算
+# - pydantic: 数据验证
+# - psutil: 进程管理
 ```
 
-### 2. 配置
+### 2. 本地模型准备
+
+详见 [知识库/MODELS.md](知识库/MODELS.md)
+
+需要下载的模型：
+- **Qwen2.5**: `ollama pull qwen2.5`
+- **BGE-small-zh-v1.5**: 向量嵌入模型
+- **PaddleOCR**: 文本识别模型
+
+### 3. 配置
 
 ```bash
 cp 记忆库/config.json.example 记忆库/config.json
 # 编辑填入你的 API Key
 ```
 
-### 3. 启动服务
+### 4. 启动服务
 
 ```bash
 cd 记忆库 && python -m uvicorn src.api.server:app --reload
