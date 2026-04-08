@@ -1,0 +1,26 @@
+{
+  "current_instance": "default",
+  "instances": {
+    "default": {
+      "db_path": "instances/default/memories.db",
+      "sub_db_path": "instances/default/sub.db",
+      "keys_dir": "instances/default/keys"
+    }
+  },
+  "deepseek": {
+    "api_key": "YOUR_DEEPSEEK_API_KEY",
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat"
+  },
+  "freeze_timeout_seconds": 30,
+  "topk_default": 2,
+  "context_threshold": 150000,
+  "idle_timeout": 30,
+  "max_memories_per_recall": 10,
+  "cluster_merge_trigger_count": 3,
+  "cluster_similarity_threshold": 0.65,
+  "kb": {
+    "ollama_api": "http://localhost:11434/api/generate",
+    "ollama_model": "qwen2.5"
+  }
+}

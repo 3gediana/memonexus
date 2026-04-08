@@ -1,0 +1,122 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+
+# 日志
+*.log
+*.jsonl
+logs/
+
+# 运行时状态
+current_session.json
+key_call_history.json
+**/keys/*/summary.json
+
+# Node
+node_modules/
+.vite/
+dist/
+.npm
+.yarn/install-state.gz
+
+# 本地配置/脚本
+.claude/
+server.log
+start_server.bat
+
+# 生成的文档
+web-app/docs/page-docs/
+web-app/docs/implementation/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# GSD baseline
+.gsd
+.gsd-id
+
+# pytest/ruff 缓存
+.pytest_cache/
+.ruff_cache/
+.cache/
+.coverage
+htmlcov/
+*.pyc
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+
+# Next.js
+.next/
+out/
+
+# 敏感配置文件
+记忆库/config.json
+知识库/.scripts/config.json
+
+# 开发流程文件（测试、文档）
+开发流程文件/
+cb/
+记忆库/test_*.py
+记忆库/src/system/test_*.py
+记忆库/src/**/test_*.py
+记忆库/src/**/__pycache__/
+strict_benchmark.py
+strict_benchmark_report.json
+
+# 模型文件（仅保留目录结构说明）
+知识库/.models/*/*.bin
+知识库/.models/*/*.onnx
+知识库/.models/*/*.pth
+知识库/.models/*/*.pt
+知识库/.models/*/*.model
+知识库/.models/*/pytorch_model.bin
+知识库/.models/*/model.safetensors
+知识库/.models/*/onnx*/
+知识库/.models/paddleocr-models/whl/
+知识库/.models/bge-small-zh-v1.5/onnx/
+知识库/.models/bge-small-zh-v1.5/*.pdiparams
+知识库/.models/bge-small-zh-v1.5/*.pdiparams.info
+知识库/.models/bge-small-zh-v1.5/*.png
+知识库/.models/bge-small-zh-v1.5/inference.py
+知识库/.models/paddleocr-models/*.tar
+知识库/.models/paddleocr-models/*.gz
+
+# 知识库资料（仅代码，不包含个人资料）
+知识库/content/
+知识库/资料/
+!知识库/资料/README.md

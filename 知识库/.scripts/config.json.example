@@ -1,0 +1,15 @@
+{
+  "modelCache": "./.models/paddleocr-models",
+  "parseflowMcpPath": "./.models/parseflow-mcp/index.js",
+  "ocr": {
+    "enabled": true,
+    "provider": "paddleocr",
+    "pythonScript": "./.scripts/core/ocr-helper.py",
+    "pythonPath": "python",
+    "modelPath": "./.models/paddleocr-models/whl"
+  },
+  "indexer": {
+    "concurrency": 5,
+    "batchSize": 10
+  }
+}
