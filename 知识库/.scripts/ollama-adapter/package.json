@@ -1,0 +1,10 @@
+{
+  "name": "ollama-adapter",
+  "version": "1.0.0",
+  "description": "Ollama to OpenAI API Adapter for CCR",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

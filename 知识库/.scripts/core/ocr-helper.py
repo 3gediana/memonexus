@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+RapidOCR 本地 OCR 服务脚本（ONNX Runtime GPU 加速）
+用于知识库系统的文本提取降级方案
+"""
+
+import sys
+import json
+import os
+import logging
+
+# 设置日志
+kbLogger = logging.getLogger('KB')
+kbLogger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stderr)
+handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
+kbLogger.addHandler(handler)
+
+# 设置 stdout 为 UTF-8 编码
+sys.stdout.reconfigure(encoding='utf-8')
+
+# 添加 CUDA 库路径
+python_root = os.path.dirname(sys.executable)
+cudnn_bin = os.path.join(python_root, 'Lib', 'site-packages', 'nvidia', 'cudnn', 'bin')
+cublas_bin = os.path.join(python_root, 'Lib', 'site-packages', 'nvidia', 'cublas', 'bin')
+nvrtc_bin = os.path.join(python_root, 'Lib', 'site-packages', 'nvidia', 'cuda_nvrtc', 'bin')
+cuda_bin = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/bin'
+current_path = os.environ.get('PATH', '')
+os.environ['PATH'] = ';'.join([cuda_bin, cudnn_bin, cublas_bin, nvrtc_bin]) + (';' + current_path if current_path else '')
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    RAPIDOCR_AVAILABLE = True
+except ImportError:
+    RAPIDOCR_AVAILABLE = False
+    print("警告：rapidocr-onnxruntime 未安装", file=sys.stderr)
+
+_ocr_instance = None
+
+
+# 获取脚本所在目录的父级（即 .models/），然后定位 paddleocr-models
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '.models'))
+ONNX_MODEL_DIR = os.path.join(MODELS_DIR, 'paddleocr-models', 'onnx')
+
+
+def get_ocr_instance():
+    global _ocr_instance
+    if _ocr_instance is None:
+        if not RAPIDOCR_AVAILABLE:
+            return None
+        _ocr_instance = RapidOCR(
+            det_use_dml=True,
+            cls_use_dml=True,
+            rec_use_dml=True,
+            det_model_path=os.path.join(ONNX_MODEL_DIR, 'ch_PP-OCRv4_det_server_infer.onnx'),
+            rec_model_path=os.path.join(ONNX_MODEL_DIR, 'ch_PP-OCRv4_rec_server_infer.onnx'),
+        )
+    return _ocr_instance
+
+
+def ocr_image(ocr, img_array) -> tuple:
+    """对单张图片做 OCR，返回 (lines, confidences)"""
+    ocr_result, _ = ocr(img_array)
+    if not ocr_result:
+        return [], []
+    lines, confidences = [], []
+    for item in ocr_result:
+        if len(item) >= 3:
+            lines.append(item[1])
+            confidences.append(item[2])
+    return lines, confidences
+
+
+def ocr_file(file_path: str, pages: list = None) -> dict:
+    """
+    对文件进行 OCR
+
+    Args:
+        file_path: 文件路径
+        pages: 需要 OCR 的页码列表（从 1 开始），None 表示全部页面
+    """
+    result = {
+        "success": False,
+        "text": "",
+        "lines": [],
+        "confidence": 0.0,
+        "error": ""
+    }
+
+    if not os.path.exists(file_path):
+        result["error"] = f"文件不存在：{file_path}"
+        return result
+
+    if not RAPIDOCR_AVAILABLE:
+        result["error"] = "rapidocr-onnxruntime 未安装"
+        return result
+
+    try:
+        ocr = get_ocr_instance()
+        if ocr is None:
+            result["error"] = "无法初始化 OCR 实例"
+            return result
+
+        ext = os.path.splitext(file_path)[1].lower()
+        all_lines, all_confidences = [], []
+
+        if ext == '.pdf':
+            import fitz
+            import numpy as np
+            from pathlib import Path
+
+            pdf_path = Path(file_path) if isinstance(file_path, str) else Path(file_path.decode('utf-8'))
+            doc = fitz.open(pdf_path)
+
+            # 确定需要 OCR 的页面
+            if pages is None:
+                pages_to_ocr = list(range(1, doc.page_count + 1))
+            else:
+                pages_to_ocr = [p for p in pages if 1 <= p <= doc.page_count]
+
+            kbLogger.info(f"[OCR] 总页数：{doc.page_count}, 需要 OCR 的页：{len(pages_to_ocr)}")
+
+            # 只渲染需要 OCR 的页面
+            page_results = {}  # 页码 -> OCR 文本
+            for page_num in pages_to_ocr:
+                page = doc[page_num - 1]  # fitz 使用 0-based 索引
+                mat = fitz.Matrix(2.0, 2.0)
+                pix = page.get_pixmap(matrix=mat)
+                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+                if pix.n == 4:
+                    img = img[:, :, :3]
+
+                lines, confidences = ocr_image(ocr, img)
+                if lines:
+                    page_results[page_num] = "\n".join(lines)
+                    all_lines.extend(lines)
+                    all_confidences.extend(confidences)
+                else:
+                    page_results[page_num] = ""
+
+            doc.close()
+
+            # 返回每页的 OCR 结果，方便 TS 端合并
+            result["page_results"] = page_results
+        else:
+            all_lines, all_confidences = ocr_image(ocr, file_path)
+
+        if not all_lines:
+            result["error"] = "未识别到文字"
+            return result
+
+        result["success"] = True
+        result["text"] = "\n".join(all_lines)
+        result["lines"] = all_lines
+        result["confidence"] = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
+
+    except Exception as e:
+        result["error"] = f"OCR 识别失败：{str(e)}"
+
+    return result
+
+
+def main():
+    import base64
+    file_path = None
+    pages = None
+
+    for arg in sys.argv[1:]:
+        if arg.startswith('--b64path='):
+            file_path = base64.b64decode(arg[10:]).decode('utf-8')
+        elif arg.startswith('--pages='):
+            # 支持页码列表，如 --pages=1,3,5-7,10
+            pages_str = arg[8:]
+            pages = []
+            for part in pages_str.split(','):
+                if '-' in part:
+                    start, end = map(int, part.split('-'))
+                    pages.extend(range(start, end + 1))
+                else:
+                    pages.append(int(part))
+
+    if not file_path:
+        file_path = os.environ.get('KB_OCR_FILE_PATH') or (
+            sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] != 'dummy' else None
+        )
+
+    if not file_path:
+        print(json.dumps({
+            "success": False,
+            "error": "用法：python ocr-helper.py --b64path=<base64 路径> [--pages=1,3,5-7]"
+        }, ensure_ascii=False))
+        sys.exit(1)
+
+    result = ocr_file(file_path, pages)
+    print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
