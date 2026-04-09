@@ -277,7 +277,7 @@ export function ChatDemo() {
 
   const handleNewConversation = async () => {
     disconnect();
-    setIsStreaming(false);
+    setIsStreaming(true);
     setIsThinking(false);
     setMessages([]);
     setCurrentEvents([]);
@@ -289,62 +289,82 @@ export function ChatDemo() {
 
     try {
       const res = await fetch('/api/dialogue/clear', { method: 'POST' });
-      const data = await res.json();
-      if (data.success && data.data?.storage_events) {
-        const events = data.data.storage_events;
-        for (const event of events) {
-          if (event.type === 'agent_thinking') {
-            setCurrentEvents(prev => [...prev, {
-              id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-              timestamp: new Date().toLocaleTimeString(),
-              agentLabel: event.agent,
-              agentColor: '#8b5cf6',
-              direction: 'call' as const,
-              toolName: `[thinking] ${event.phase}`,
-            }]);
-          } else if (event.type === 'agent_tool_call') {
-            setCurrentEvents(prev => [...prev, {
-              id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-              timestamp: new Date().toLocaleTimeString(),
-              agentLabel: event.agent,
-              agentColor: '#06b6d4',
-              direction: 'call' as const,
-              toolName: `[${event.agent}] ${event.tool}`,
-              params: JSON.stringify(event.params).slice(0, 200),
-            }]);
-          } else if (event.type === 'agent_result') {
-            setCurrentEvents(prev => {
-              const lastCallIndex = prev.findIndex(e => e.direction === 'call' && e.agentLabel === event.agent);
-              if (lastCallIndex >= 0) {
-                const updated = [...prev];
-                updated[lastCallIndex] = { ...updated[lastCallIndex], result: JSON.stringify(event.result).slice(0, 200), direction: 'return' };
-                return updated;
+      if (!res.ok || !res.body) {
+        setIsStreaming(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'agent_thinking') {
+                setCurrentEvents(prev => [...prev, {
+                  id: `clear_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                  timestamp: new Date().toLocaleTimeString(),
+                  agentLabel: data.agent,
+                  agentColor: '#8b5cf6',
+                  direction: 'call' as const,
+                  toolName: `[thinking] ${data.phase}`,
+                }]);
+              } else if (eventType === 'agent_tool_call') {
+                setCurrentEvents(prev => [...prev, {
+                  id: `clear_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                  timestamp: new Date().toLocaleTimeString(),
+                  agentLabel: data.agent,
+                  agentColor: '#06b6d4',
+                  direction: 'call' as const,
+                  toolName: `[${data.agent}] ${data.tool}`,
+                  params: JSON.stringify(data.params).slice(0, 200),
+                }]);
+              } else if (eventType === 'agent_result') {
+                setCurrentEvents(prev => {
+                  const lastCallIndex = prev.findIndex(e => e.direction === 'call' && e.agentLabel === data.agent);
+                  if (lastCallIndex >= 0) {
+                    const updated = [...prev];
+                    updated[lastCallIndex] = { ...updated[lastCallIndex], result: JSON.stringify(data.result).slice(0, 200), direction: 'return' };
+                    return updated;
+                  }
+                  return [...prev, {
+                    id: `clear_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                    timestamp: new Date().toLocaleTimeString(),
+                    agentLabel: data.agent,
+                    agentColor: '#10b981',
+                    direction: 'return' as const,
+                    toolName: `[result]`,
+                    result: JSON.stringify(data.result).slice(0, 200),
+                  }];
+                });
+              } else if (eventType === 'storage_result') {
+                setStorageResult({
+                  type: 'storage_result',
+                  memories_added: data.memories_added || [],
+                  total_memories: data.total_memories || 0,
+                });
               }
-              return [...prev, {
-                id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                timestamp: new Date().toLocaleTimeString(),
-                agentLabel: event.agent,
-                agentColor: '#10b981',
-                direction: 'return' as const,
-                toolName: `[result]`,
-                result: JSON.stringify(event.result).slice(0, 200),
-              }];
-            });
-          } else if (event.type === 'storage_progress') {
-            setCurrentEvents(prev => [...prev, {
-              id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-              timestamp: new Date().toLocaleTimeString(),
-              agentLabel: 'Storage',
-              agentColor: '#f59e0b',
-              direction: 'call' as const,
-              toolName: `[progress] ${event.stage}`,
-              params: JSON.stringify(event.progress || {}).slice(0, 200),
-            }]);
+            } catch { /* skip non-JSON lines */ }
           }
         }
       }
     } catch (e) {
       console.error('Failed to clear dialogue:', e);
+    } finally {
+      setIsStreaming(false);
     }
   };
 

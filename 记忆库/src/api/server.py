@@ -296,14 +296,14 @@ async def get_dialogue_messages():
 async def clear_dialogue_messages():
     """清空对话历史（开启新会话时调用）
 
+    返回 SSE 流，实时推送存储事件：
     1. 取消45s静息计时器
     2. 解冻FreezeManager
-    3. 处理 dialogue_messages 中的用户消息（存储）
+    3. 流式处理 dialogue_messages 中的用户消息
     4. 清空对话上下文
     """
     recall_timer.cancel()
-
-    unfreeze_result = freeze_manager.unfreeze()
+    freeze_manager.unfreeze()
     freeze_manager.clear_queue()
 
     # 提取待处理的用户消息
@@ -315,70 +315,81 @@ async def clear_dialogue_messages():
             if entry.get("user_message")
         ]
 
-    all_events = []
+    async def clear_event_generator():
+        import time as time_module
 
-    if messages_to_process:
+        if not messages_to_process:
+            with dialogue_messages_lock:
+                dialogue_messages.clear()
+            yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': 0})}\n\n"
+            return
 
-        class EventCollector:
-            def __init__(self):
-                self.events = []
+        yield f"event: clearing_start\ndata: {json.dumps({'type': 'clearing_start', 'total': len(messages_to_process)})}\n\n"
 
-            def emit_thinking(self, agent, phase):
-                self.events.append(
-                    {"type": "agent_thinking", "agent": agent, "phase": phase}
-                )
-
-            def emit_tool_call(self, agent, tool, params):
-                self.events.append(
-                    {
-                        "type": "agent_tool_call",
-                        "agent": agent,
-                        "tool": tool,
-                        "params": params,
-                    }
-                )
-
-            def emit_result(self, agent, result):
-                self.events.append(
-                    {"type": "agent_result", "agent": agent, "result": result}
-                )
-
-            def emit_storage_progress(self, stage, progress):
-                self.events.append(
-                    {
-                        "type": "storage_progress",
-                        "stage": stage,
-                        "progress": progress,
-                    }
-                )
+        q: asyncio.Queue = asyncio.Queue()
+        event_bus = AgentEventBus()
+        event_bus.bind_queue(q)
+        event_bus.bind_loop(asyncio.get_running_loop())
+        total_added = []
 
         def run_storage():
             from src.system.storage_flow import process_user_message
 
-            collector = EventCollector()
-            events = []
             for idx, msg in enumerate(messages_to_process):
-                result = process_user_message(msg, idx + 1, event_bus=collector)
-                if result.get("success"):
-                    events.extend(collector.events)
-                    collector.events = []
-            return events
+                result = process_user_message(msg, idx + 1, event_bus=event_bus)
+                if result.get("success") and result.get("memories_added"):
+                    total_added.extend(result["memories_added"])
+            q.put_nowait(None)
 
-        import asyncio
+        t = threading.Thread(target=run_storage, daemon=True)
+        t.start()
 
-        loop = asyncio.get_event_loop()
-        all_events = await loop.run_in_executor(None, run_storage)
-        logger.info(f"[clear] 存储 {len(messages_to_process)} 条用户消息")
+        # 流式推送事件
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=5)
+            except asyncio.TimeoutError:
+                continue
 
-    with dialogue_messages_lock:
-        dialogue_messages.clear()
+            if event is None:
+                break
 
-    return ok(
-        {
-            "cleared": True,
-            "processed_messages": len(messages_to_process),
-            "storage_events": all_events,
-        }
+            event_type = event.get("type", "")
+            if event_type == "agent_thinking":
+                yield f"event: agent_thinking\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+            elif event_type == "agent_tool_call":
+                yield f"event: agent_tool_call\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+            elif event_type == "agent_result":
+                yield f"event: agent_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        # 存储完成
+        if total_added:
+            transformed = [
+                {
+                    "memory_id": m.get("fingerprint", ""),
+                    "key": m.get("key", ""),
+                    "content_preview": m.get("memory", "")[:100]
+                    + ("..." if len(m.get("memory", "")) > 100 else ""),
+                }
+                for m in total_added
+            ]
+            yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': transformed, 'total_memories': len(transformed)}, ensure_ascii=False)}\n\n"
+
+        with dialogue_messages_lock:
+            dialogue_messages.clear()
+
+        logger.info(
+            f"[clear] 存储 {len(messages_to_process)} 条用户消息, 新增 {len(total_added)} 条记忆"
+        )
+        yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': len(messages_to_process), 'memories_added': len(total_added)})}\n\n"
+
+    return StreamingResponse(
+        clear_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
     )
 
 
