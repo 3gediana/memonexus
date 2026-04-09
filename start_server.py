@@ -63,6 +63,8 @@ def start():
 
     time.sleep(2)
 
+    npm_cmd = r"C:\Program Files\nodejs\npm.cmd"
+
     # Install frontend deps if needed
     if not os.path.exists(os.path.join(FRONTEND_DIR, "node_modules")):
         print("[Memonexus] Installing frontend dependencies...")
@@ -70,7 +72,6 @@ def start():
 
     # Start frontend
     print("[Memonexus] Starting frontend on port 5173...")
-    npm_cmd = r"C:\Program Files\nodejs\npm.cmd"
     p_frontend = subprocess.Popen(
         [npm_cmd, "run", "dev"],
         cwd=FRONTEND_DIR,
