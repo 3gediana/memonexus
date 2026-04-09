@@ -24,8 +24,8 @@ export const CLUSTER_COLOR_POOL = [
 ];
 
 // 根据社区ID获取颜色
-export const getClusterColor = (clusterId: string): string => {
-  if (clusterId === 'unclustered') return '#666666';
+export const getClusterColor = (clusterId: string | undefined): string => {
+  if (!clusterId || clusterId === 'unclustered') return '#666666';
   const hash = clusterId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return CLUSTER_COLOR_POOL[hash % CLUSTER_COLOR_POOL.length];
 };

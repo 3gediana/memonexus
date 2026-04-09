@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { AGENTS } from '../../mock/agentFlow';
-import { useStreamConnection, StreamEvent } from '../../hooks/useStreamConnection';
+import { useStreamConnection } from '../../hooks/useStreamConnection';
 
 const CARD_WIDTH = 160;
 const CARD_HEIGHT = 90;
@@ -236,25 +236,6 @@ export function AgentFlow() {
       }
     } catch (err) {
       console.error('Failed to fetch monitor data:', err);
-    }
-  }, []);
-
-  const fetchDialogueEvents = useCallback(async () => {
-    try {
-      const res = await fetch('/api/dialogue/messages');
-      if (res.ok) {
-        const json = await res.json();
-        const messages = json.data || json;
-        // Only fetch historical messages for display, no simulation
-        setEvents(prev => {
-          if (messages.length > 0 && prev.length === 0) {
-            return prev;
-          }
-          return prev;
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch dialogue events:', err);
     }
   }, []);
 

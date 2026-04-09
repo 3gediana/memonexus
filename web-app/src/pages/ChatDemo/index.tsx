@@ -365,6 +365,7 @@ export function ChatDemo() {
                   type: 'storage_result',
                   memories_added: data.memories_added || [],
                   total_memories: data.total_memories || 0,
+                  duration_ms: data.duration_ms || 0,
                 });
               }
             } catch { /* skip non-JSON lines */ }

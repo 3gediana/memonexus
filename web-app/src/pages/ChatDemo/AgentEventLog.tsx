@@ -17,27 +17,32 @@ export function AgentEventLog({ events, speed, onComplete }: AgentEventLogProps)
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [visibleEvents]);
 
-  // 重置当events变化时
+  // 初始化/重置当 events 数量减少时（如清空）
   useEffect(() => {
-    setVisibleEvents([]);
-    setCurrentIndex(0);
+    if (events.length === 0) {
+      setVisibleEvents([]);
+      setCurrentIndex(0);
+    }
   }, [events]);
 
-  // 逐步显示事件
+  // 逐步显示事件（仅处理新增部分）
   useEffect(() => {
-    if (currentIndex >= events.length) {
+    if (events.length === 0) return;
+
+    // 有新增事件，开始或继续动画
+    if (currentIndex < events.length) {
+      const delay = currentIndex === 0 ? 300 : 800 / speed;
+
+      const timer = setTimeout(() => {
+        setVisibleEvents((prev) => [...prev, events[currentIndex]]);
+        setCurrentIndex((prev) => prev + 1);
+      }, delay);
+
+      return () => clearTimeout(timer);
+    } else {
+      // 所有事件已显示完毕
       onComplete?.();
-      return;
     }
-
-    const delay = currentIndex === 0 ? 300 : 800 / speed;
-
-    const timer = setTimeout(() => {
-      setVisibleEvents((prev) => [...prev, events[currentIndex]]);
-      setCurrentIndex((prev) => prev + 1);
-    }, delay);
-
-    return () => clearTimeout(timer);
   }, [currentIndex, events, speed, onComplete]);
 
   const getDirectionIcon = (direction: string) => {

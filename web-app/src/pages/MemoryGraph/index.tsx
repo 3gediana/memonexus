@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
-import { forceX, forceY, forceCollide } from 'd3-force';
+import { forceManyBody, forceCollide, forceX, forceY } from 'd3-force';
 import { eventBus } from '../../utils/EventBus';
 import { MEMORY_GRAPH_UPDATED } from '../../constants/events';
 import { getKeyColor, getClusterColor } from '../../mock/memoryGraph';
@@ -44,6 +44,7 @@ export function MemoryGraph() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [graphReady, setGraphReady] = useState(false);
+  const [colorMode, setColorMode] = useState<'key' | 'cluster'>('cluster'); // 默认按社区着色
   const graphRef = useRef<any>(null);
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const isInitialLoadRef = useRef(true);
@@ -108,28 +109,6 @@ export function MemoryGraph() {
     };
   }, [fetchData]);
 
-  // 社区聚类力布局
-  useEffect(() => {
-    if (!graphRef.current || !graphData?.nodes?.length) return;
-
-    const clusterIds = [...new Set(graphData.nodes.map((n: any) => n.cluster_id))];
-    const clusterCount = Math.max(clusterIds.length, 1);
-
-    graphRef.current.d3Force('x', forceX((d: any) => {
-      const idx = clusterIds.indexOf(d.cluster_id);
-      const angle = (idx / clusterCount) * 2 * Math.PI;
-      return window.innerWidth / 2 + 180 * Math.cos(angle);
-    }).strength(0.2));
-
-    graphRef.current.d3Force('y', forceY((d: any) => {
-      const idx = clusterIds.indexOf(d.cluster_id);
-      const angle = (idx / clusterCount) * 2 * Math.PI;
-      return window.innerHeight / 2 + 180 * Math.sin(angle);
-    }).strength(0.2));
-
-    graphRef.current.d3Force('collision', forceCollide(8));
-  }, [graphData]);
-
   const activeKeys = useMemo(() =>
     selectedKeys.size === 0
       ? new Set(keys.map(k => k.name))
@@ -172,6 +151,38 @@ export function MemoryGraph() {
 
     return { nodes: nodesWithPositions, links: linksWithRefs };
   }, [filteredData]);
+
+  // 聚类力配置 - 仅在首次时设置
+  const isInitialSetup = useRef(true);
+  useEffect(() => {
+    if (!graphRef.current || !graphData?.nodes?.length) return;
+
+    // 首次加载时配置聚类力
+    if (isInitialSetup.current) {
+      isInitialSetup.current = false;
+
+      const clusterIds = [...new Set(graphData.nodes.map((n: any) => n.cluster_id))];
+      const clusterCount = Math.max(clusterIds.length, 1);
+      const width = 800, height = 600;
+
+      // 配置社区聚类力 - 节点按社区聚集
+      graphRef.current.d3Force('x', forceX((d: any) => {
+        const idx = clusterIds.indexOf(d.cluster_id);
+        const angle = (idx / clusterCount) * 2 * Math.PI;
+        return width / 2 + 150 * Math.cos(angle);
+      }).strength(0.08)); // 弱的聚类力
+
+      graphRef.current.d3Force('y', forceY((d: any) => {
+        const idx = clusterIds.indexOf(d.cluster_id);
+        const angle = (idx / clusterCount) * 2 * Math.PI;
+        return height / 2 + 150 * Math.sin(angle);
+      }).strength(0.08)); // 弱的聚类力
+
+      // 弱排斥力和碰撞力
+      graphRef.current.d3Force('charge', forceManyBody().strength(-50));
+      graphRef.current.d3Force('collision', forceCollide(10));
+    }
+  }, [graphData]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
     setSelectedNode(node);
@@ -406,29 +417,74 @@ export function MemoryGraph() {
         </div>
       </header>
 
-      <main className="flex-1 relative overflow-hidden">
-        <div className="absolute top-4 left-4 z-10 bg-neural-card/80 backdrop-blur-lg border border-neural-border rounded-xl p-4">
-          <h3 className="text-xs text-slate-400 uppercase tracking-wider mb-3">图例</h3>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-cyan-400" />
-              <span className="text-xs text-slate-300">节点大小 = 价值分</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-0.5 h-4 bg-slate-400" />
-              <span className="text-xs text-slate-300">边粗细 = 关联强度</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: getKeyColor('study') }} />
-              <span className="text-xs text-slate-300">节点颜色 = Key分类</span>
+      <main className="flex-1 relative overflow-hidden neural-grid">
+        {/* 社区颜色图例 - 仅在社区模式显示 */}
+        {colorMode === 'cluster' && (
+          <div className="absolute top-4 left-4 z-10 bg-neural-card/80 backdrop-blur-lg border border-neural-border rounded-xl p-4 max-h-64 overflow-y-auto">
+            <h3 className="text-xs text-slate-400 uppercase tracking-wider mb-3">社区颜色</h3>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              {[...new Set(filteredData.nodes.map(n => n.cluster_id))].sort().map((clusterId) => (
+                <div key={clusterId} className="flex items-center gap-2">
+                  <div
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: getClusterColor(clusterId) }}
+                  />
+                  <span className="text-xs text-slate-300 truncate">
+                    {clusterId === 'unclustered' ? '未分类' : `社区 ${clusterId.slice(0, 8)}`}
+                  </span>
+                  <span className="text-xs text-slate-500 ml-auto">
+                    {filteredData.nodes.filter(n => n.cluster_id === clusterId).length}
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
+        )}
 
-        <div className="absolute top-4 right-4 z-10 bg-neural-card/80 backdrop-blur-lg border border-neural-border rounded-xl px-4 py-3">
-          <p className="text-xs text-slate-400 font-chinese">
-            <span className="text-cyan-400">拖拽:</span> 移动节点位置 · <span className="text-cyan-400">滚轮:</span> 缩放 · <span className="text-cyan-400">点击:</span> 查看详情
-          </p>
+        {/* Key颜色图例 - 仅在Key模式显示 */}
+        {colorMode === 'key' && (
+          <div className="absolute top-4 left-4 z-10 bg-neural-card/80 backdrop-blur-lg border border-neural-border rounded-xl p-4 max-h-64 overflow-y-auto">
+            <h3 className="text-xs text-slate-400 uppercase tracking-wider mb-3">Key颜色</h3>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              {keys.map((k) => (
+                <div key={k.name} className="flex items-center gap-2">
+                  <div
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: getKeyColor(k.name) }}
+                  />
+                  <span className="text-xs text-slate-300 truncate">{k.label || k.name}</span>
+                  <span className="text-xs text-slate-500 ml-auto">{k.count || 0}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 颜色模式切换按钮 */}
+        <div className="absolute top-16 right-4 z-20 bg-neural-card/90 backdrop-blur-lg border border-neural-border rounded-xl p-3 shadow-lg">
+          <div className="text-xs text-slate-400 mb-2 font-medium">颜色模式</div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setColorMode('key')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                colorMode === 'key'
+                  ? 'bg-cyan-400/20 text-cyan-400 border border-cyan-400/30'
+                  : 'bg-slate-700/50 text-slate-400 hover:text-slate-300 border border-transparent'
+              }`}
+            >
+              按 Key
+            </button>
+            <button
+              onClick={() => setColorMode('cluster')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                colorMode === 'cluster'
+                  ? 'bg-purple-400/20 text-purple-400 border border-purple-400/30'
+                  : 'bg-slate-700/50 text-slate-400 hover:text-slate-300 border border-transparent'
+              }`}
+            >
+              按社区
+            </button>
+          </div>
         </div>
 
         {graphReady && filteredData.nodes.length > 0 ? (
@@ -438,20 +494,23 @@ export function MemoryGraph() {
             nodeId="id"
             nodeLabel={(node: any) => node.tag}
             nodeVal={(node: any) => getNodeSize(node.value_score)}
-            nodeColor={(node: any) => getClusterColor(node.cluster_id)}
+            nodeColor={(node: any) => {
+              const color = colorMode === 'cluster' ? getClusterColor(node.cluster_id) : getKeyColor(node.key);
+              return color;
+            }}
             linkWidth={(link: any) => getLinkWidth(link.effective_strength)}
             linkColor={() => 'rgba(100, 116, 139, 0.4)'}
             nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
               const label = node.tag;
               const nodeSize = getNodeSize(node.value_score);
               const fontSize = Math.max(8 / globalScale, 2.5);
-              const keyColor = getKeyColor(node.key);
+              const nodeColor = colorMode === 'cluster' ? getClusterColor(node.cluster_id) : getKeyColor(node.key);
               const x = Number.isFinite(node.x) ? node.x : 0;
               const y = Number.isFinite(node.y) ? node.y : 0;
 
               const gradient = ctx.createRadialGradient(x, y, nodeSize, x, y, nodeSize + 14);
-              gradient.addColorStop(0, keyColor + '50');
-              gradient.addColorStop(1, keyColor + '00');
+              gradient.addColorStop(0, nodeColor + '50');
+              gradient.addColorStop(1, nodeColor + '00');
               ctx.beginPath();
               ctx.arc(x, y, nodeSize + 14, 0, 2 * Math.PI);
               ctx.fillStyle = gradient;
@@ -459,7 +518,7 @@ export function MemoryGraph() {
 
               ctx.beginPath();
               ctx.arc(x, y, nodeSize, 0, 2 * Math.PI);
-              ctx.fillStyle = keyColor;
+              ctx.fillStyle = nodeColor;
               ctx.fill();
 
               ctx.font = `bold ${fontSize}px Space_Mono, monospace`;

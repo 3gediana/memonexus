@@ -57,6 +57,16 @@ def handle_user_message(
 
         # 对话Agent循环（支持多轮tool-use）
         dialogue = DialogueAgent(list_all_keys())
+
+        # 将 dialogue_messages 格式转换为 LLM 期望的格式，并添加当前用户消息
+        if conversation_history:
+            llm_history = []
+            for entry in conversation_history:
+                if entry.get("user_message"):
+                    llm_history.append({"role": "user", "content": entry["user_message"]})
+                if entry.get("assistant_message"):
+                    llm_history.append({"role": "assistant", "content": entry["assistant_message"]})
+            conversation_history = llm_history
         conversation_history.append({"role": "user", "content": message})
 
         max_iterations = 8
@@ -937,7 +947,16 @@ def handle_user_message_streaming(
             )
 
             msg_to_send = message if iteration == 0 else None
-            hist_to_send = conversation_history if iteration == 0 else None
+            if iteration == 0 and conversation_history:
+                # 将 dialogue_messages 格式转换为 LLM 期望的格式
+                hist_to_send = []
+                for entry in conversation_history:
+                    if entry.get("user_message"):
+                        hist_to_send.append({"role": "user", "content": entry["user_message"]})
+                    if entry.get("assistant_message"):
+                        hist_to_send.append({"role": "assistant", "content": entry["assistant_message"]})
+            else:
+                hist_to_send = None
 
             for event in dialogue.receive_message_streaming(msg_to_send, hist_to_send):
                 event_type = event.get("type")
