@@ -91,7 +91,7 @@ export function MemoryList() {
   }, []);
 
   return (
-    <div className="min-h-screen neural-grid">
+    <div className="h-full overflow-y-auto neural-grid">
       {/* Header */}
       <header className="px-8 py-6 border-b border-neural-border sticky top-0 bg-neural-bg/80 backdrop-blur-lg z-10">
         <div className="max-w-5xl mx-auto">

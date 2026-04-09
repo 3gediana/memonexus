@@ -13,6 +13,7 @@ interface ChatMessageProps {
 export function ChatMessage({ role, content, reasoning, recall_blocks, storage_result }: ChatMessageProps) {
   const isUser = role === 'user';
   const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [recallOpen, setRecallOpen] = useState(false);
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -53,39 +54,42 @@ export function ChatMessage({ role, content, reasoning, recall_blocks, storage_r
           <p className="text-sm leading-relaxed font-chinese whitespace-pre-wrap">{content}</p>
         </div>
 
-        {/* 召回记忆块 */}
-        {recall_blocks && recall_blocks.length > 0 && (
-          <div className="mt-3 space-y-2">
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span className="px-2 py-0.5 bg-cyan-500/10 text-cyan-400 rounded font-medium">
-                召回记忆 {recall_blocks.length} 条
-              </span>
-            </div>
-            <div className="space-y-2">
-              {recall_blocks.map((block) => (
-                <div
-                  key={block.fingerprint}
-                  className="bg-neural-card/80 border border-neural-border rounded-lg p-3 backdrop-blur-sm"
-                >
-                  <div className="flex items-center justify-between mb-2">
+        {/* 召回记忆块（可折叠） */}
+        {!isUser && recall_blocks && recall_blocks.length > 0 && (
+          <div className="mt-1.5">
+            <button
+              onClick={() => setRecallOpen(!recallOpen)}
+              className="inline-flex items-center gap-1.5 text-[11px] text-cyan-400/80 hover:text-cyan-400 transition-colors"
+            >
+              <svg
+                className={`w-2.5 h-2.5 transition-transform ${recallOpen ? 'rotate-90' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span>召回 {recall_blocks.length} 条记忆</span>
+            </button>
+            {recallOpen && (
+              <div className="mt-1 pl-3 border-l-2 border-cyan-500/30 space-y-1">
+                {recall_blocks.map((block) => (
+                  <div key={block.fingerprint} className="text-[11px] font-chinese">
                     <span
-                      className="px-2 py-0.5 rounded text-xs font-medium"
+                      className="px-1.5 py-0.5 rounded text-[10px] font-medium mr-1.5"
                       style={{
-                        backgroundColor: `${getKeyColor(block.key)}20`,
+                        backgroundColor: `${getKeyColor(block.key)}15`,
                         color: getKeyColor(block.key),
                       }}
                     >
                       {block.key}
                     </span>
-                    <span className="text-xs text-slate-500">召回: {block.recall_count}次</span>
+                    <span className="text-slate-300">{block.memory}</span>
+                    <span className="text-slate-500 ml-1">×{block.recall_count}</span>
                   </div>
-                  <p className="text-xs text-slate-300 font-chinese mb-1">{block.tag}</p>
-                  <p className="text-xs text-slate-400 font-chinese leading-relaxed">
-                    {block.memory}
-                  </p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

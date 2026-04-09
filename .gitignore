@@ -86,6 +86,7 @@ out/
 
 # 敏感配置文件
 记忆库/config.json
+记忆库/config.env
 知识库/.scripts/config.json
 
 # 开发流程文件（测试、文档）
@@ -95,6 +96,9 @@ cb/
 记忆库/src/system/test_*.py
 记忆库/src/**/test_*.py
 记忆库/src/**/__pycache__/
+记忆库/tests/
+test_chat.py
+chrome-debug/
 strict_benchmark.py
 strict_benchmark_report.json
 
@@ -116,9 +120,8 @@ strict_benchmark_report.json
 知识库/.models/paddleocr-models/*.tar
 知识库/.models/paddleocr-models/*.gz
 
-# 知识库资料（仅代码，不包含个人资料）
-知识库/content/
-知识库/资料/
+# 知识库资料（仅保留目录结构，不包含个人资料）
+知识库/资料/*
 !知识库/资料/.gitkeep
 
 # 知识库运行时索引（自动生成）

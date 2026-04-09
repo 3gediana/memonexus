@@ -4,7 +4,8 @@ from src.system.config import load_config
 
 
 class CompressionAgent:
-    def __init__(self):
+    def __init__(self, event_bus=None):
+        self._event_bus = event_bus
         self.system_prompt = self._build_prompt()
         self._threshold = None
 
@@ -35,8 +36,14 @@ class CompressionAgent:
         """将对话历史列表格式化为待压缩的文本"""
         lines = []
         for msg in history:
-            role = "用户" if msg["role"] == "user" else "助手"
-            lines.append(f"{role}：{msg['content']}")
+            role = msg.get("role", "")
+            content = msg.get("content") or ""
+            if role == "tool":
+                continue
+            if not content:
+                continue
+            role_text = "用户" if role == "user" else "助手"
+            lines.append(f"{role_text}：{content}")
         return "\n".join(lines)
 
     def parse_compressed_history(self, text: str) -> list:
@@ -78,9 +85,13 @@ class CompressionAgent:
         if not self.should_compress(history):
             return history
 
+        old_len = len(history)
         text = self.format_history_for_compression(history)
 
         def _call():
+            if self._event_bus:
+                self._event_bus.emit_thinking("CompressionAgent", "compressing_history")
+
             response = chat_completion(
                 messages=[
                     {"role": "system", "content": self.system_prompt},
@@ -91,4 +102,10 @@ class CompressionAgent:
             return response.choices[0].message.content
 
         compressed_text = call_with_retry(_call)
-        return self.parse_compressed_history(compressed_text)
+        result = self.parse_compressed_history(compressed_text)
+        new_len = len(result)
+
+        if self._event_bus:
+            self._event_bus.emit_result("CompressionAgent", {"compressed": True, "old_count": old_len, "new_count": new_len})
+
+        return result

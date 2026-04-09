@@ -3,10 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
+import threading
 from starlette.responses import StreamingResponse
+import traceback
 
 from src.system.logger import get_module_logger
 from src.system.config import (
@@ -20,6 +23,8 @@ from src.db.init import init_database, init_sub_database
 from src.system.main import handle_user_message, handle_user_message_streaming
 from src.system.freeze import FreezeManager
 from src.system.recall_timer import get_recall_timer
+from src.system.event_bus import AgentEventBus
+from src.system.event_broadcaster import EventBroadcaster
 from src.tools.key_tools import create_key, get_key_overview, init_keys_directory
 from src.tools.memory_tools import (
     add_memory_to_key,
@@ -44,13 +49,14 @@ from src.tools.memory_space_tools import (
     list_memories as ms_list,
     init_memory_space,
 )
+from src.tools.cluster_engine import get_cluster_engine
 
 app = FastAPI(title="Memory Assistant API", version="0.2.0")
 logger = get_module_logger("api")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,6 +64,7 @@ app.add_middleware(
 
 freeze_manager = FreezeManager()
 dialogue_messages: list[dict] = []
+dialogue_messages_lock = threading.Lock()
 recall_timer = get_recall_timer()
 
 
@@ -155,7 +162,15 @@ def fail(message: str, status_code: int = 400):
 
 def unwrap(result: dict, status_code: int = 400):
     if not result.get("success", False):
-        fail(result.get("error", "UNKNOWN_ERROR"), status_code=status_code)
+        error = result.get("error", "UNKNOWN_ERROR")
+        if "NOT_FOUND" in error or "not found" in error.lower():
+            fail(error, status_code=404)
+        elif "UNAUTHORIZED" in error or "unauthorized" in error.lower():
+            fail(error, status_code=401)
+        elif "FORBIDDEN" in error or "forbidden" in error.lower():
+            fail(error, status_code=403)
+        else:
+            fail(error, status_code=status_code)
     return result
 
 
@@ -266,42 +281,15 @@ async def create_memory_instance(req: InstanceCreateRequest):
 @app.post("/api/instances/use")
 async def use_memory_instance(req: InstanceSwitchRequest):
     result = unwrap(switch_instance(req.name), 404)
-    dialogue_messages.clear()
+    with dialogue_messages_lock:
+        dialogue_messages.clear()
     return ok(result)
-
-
-@app.post("/api/dialogue/send")
-async def send_dialogue(req: ChatRequest):
-    logger.info(f"收到对话请求: {req.message[:50]}...")
-    # 用户回复时取消计时器
-    recall_timer.cancel()
-
-    result = handle_user_message(req.message, req.turn)
-    if not result.get("success"):
-        fail(result.get("error", "CHAT_FAILED"), 500)
-
-    response_message = {
-        "turn": req.turn,
-        "user_message": req.message,
-        "assistant_message": result.get("content", ""),
-        "storage_result": result.get("storage_result", {}),
-        "recall_blocks": result.get("recall_blocks", []),
-        "assembled_context": result.get("assembled_context"),
-        "freeze_status": freeze_manager.get_status(),
-    }
-    dialogue_messages.append(response_message)
-
-    # 如果有记忆召回且有待上报命中，启动45s计时器
-    has_recalled = result.get("has_recalled", False)
-    pending_hits = result.get("pending_hits", [])
-    recall_timer.start_if_recalled(has_recalled, pending_hits)
-
-    return ok(response_message)
 
 
 @app.get("/api/dialogue/messages")
 async def get_dialogue_messages():
-    return ok(dialogue_messages)
+    with dialogue_messages_lock:
+        return ok(dialogue_messages.copy())
 
 
 @app.post("/api/dialogue/clear")
@@ -312,33 +300,80 @@ async def clear_dialogue_messages():
     2. 解冻FreezeManager，触发存储（queue_messages）
     3. 清空对话上下文
     """
-    # 取消45s静息计时器
     recall_timer.cancel()
 
-    # 解冻：取出队列中积累的消息并触发存储
     unfreeze_result = freeze_manager.unfreeze()
     queue_messages = unfreeze_result.get("queue_messages", [])
 
+    all_events = []
+
     if queue_messages:
-        # 批量存储积累的消息（从队列中取出的每条消息独立存储）
-        try:
-            from src.system.storage_flow import process_user_message
 
+        class EventCollector:
+            def __init__(self):
+                self.events = []
+
+            def emit_thinking(self, agent, phase):
+                self.events.append(
+                    {"type": "agent_thinking", "agent": agent, "phase": phase}
+                )
+
+            def emit_tool_call(self, agent, tool, params):
+                self.events.append(
+                    {
+                        "type": "agent_tool_call",
+                        "agent": agent,
+                        "tool": tool,
+                        "params": params,
+                    }
+                )
+
+            def emit_result(self, agent, result):
+                self.events.append(
+                    {"type": "agent_result", "agent": agent, "result": result}
+                )
+
+            def emit_storage_progress(self, stage, progress):
+                self.events.append(
+                    {
+                        "type": "storage_progress",
+                        "stage": stage,
+                        "progress": progress,
+                    }
+                )
+
+        def run_storage():
+            collector = EventCollector()
             for idx, msg in enumerate(queue_messages):
-                process_user_message(msg, idx + 1)
-            logger.info(f"[clear] 存储 {len(queue_messages)} 条队列消息")
-        except Exception as e:
-            logger.error(f"[clear] 队列消息存储失败: {e}")
+                from src.system.storage_flow import process_user_message
 
-    # 清空对话上下文
-    dialogue_messages.clear()
+                result = process_user_message(msg, idx + 1, event_bus=collector)
+                if result.get("success"):
+                    all_events.extend(collector.events)
+                    collector.events = []
+            return all_events
 
-    return ok({"cleared": True, "queued_messages_stored": len(queue_messages)})
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        storage_events = await loop.run_in_executor(None, run_storage)
+        logger.info(f"[clear] 存储 {len(queue_messages)} 条队列消息")
+
+    with dialogue_messages_lock:
+        dialogue_messages.clear()
+
+    return ok(
+        {
+            "cleared": True,
+            "queued_messages": len(queue_messages),
+            "storage_events": all_events,
+        }
+    )
 
 
-@app.post("/api/chat")
-async def chat(req: ChatRequest):
-    return await send_dialogue(req)
+# @app.post("/api/chat")
+# async def chat(req: ChatRequest):
+#     return await send_dialogue(req)
 
 
 @app.post("/api/chat/stream/{instance_id}")
@@ -363,145 +398,203 @@ async def chat_stream(instance_id: str, req: ChatRequest):
     freeze_manager.freeze()
 
     async def event_generator():
+        import threading
+        import time
+
         final_content = ""
         final_has_recalled = False
         turn = req.turn
         q: asyncio.Queue = asyncio.Queue()
+        last_heartbeat = time.time()
+        stream_timeout = 120  # 120秒无数据视为超时
+
+        event_bus = AgentEventBus()
+        event_bus.bind_queue(q)
+        event_bus.bind_loop(asyncio.get_running_loop())
+        event_bus.start_heartbeat()
 
         def thread_worker():
             try:
                 count = 0
+                with dialogue_messages_lock:
+                    dialogue_snapshot = dialogue_messages.copy()
                 for event in handle_user_message_streaming(
-                    req.message, req.turn, dialogue_messages
+                    req.message, req.turn, dialogue_snapshot, event_bus=event_bus
                 ):
                     count += 1
-                    q.put_nowait(event)  # 立即放入队列，不等待
+                    q.put_nowait(event)
                 logger.info(f"[SSE] thread_worker finished, total {count} events")
-                q.put(None)  # 结束标记
+                q.put_nowait(None)
             except Exception as e:
                 logger.error(f"[SSE] thread error: {e}")
-                q.put({"type": "error", "message": str(e)})
-                q.put(None)
-
-        import threading
+                logger.error(traceback.format_exc())
+                q.put_nowait({"type": "error", "message": str(e)})
+                q.put_nowait(None)
 
         t = threading.Thread(target=thread_worker, daemon=True)
         t.start()
 
-        while True:
-            event = await q.get()
-            if event is None:
-                logger.info("[SSE] got None, exiting loop")
-                break
-            event_type = event.get("type", "content")
-            logger.info(
-                f"[SSE] yielding event: {event_type}, content_len={len(event.get('delta', event.get('content', '')))}"
-            )
-            if event_type == "reasoning":
-                yield f"event: reasoning\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "content":
-                yield f"event: content\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "tool_call":
-                yield f"event: tool_call\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "tool_return":
-                yield f"event: tool_return\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "done":
-                final_content = event.get("content", "")
-                final_has_recalled = event.get("has_recalled", False)
-                yield f"event: done\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "error":
-                yield f"event: error\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "storage_result":
-                yield f"event: storage_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-        # ========== 流结束：解冻 + 45s计时器 + 存储 ==========
-
-        # 检查冻结是否超时（45s静息后自动触发report_hits）
-        if freeze_manager.check_timeout():
-            logger.info("[SSE] freeze timed out, triggering report_hits")
-            from src.tools.edge_calibrator import get_calibrator
-            from src.tools.memory_tools import get_db
-
-            calibrator = get_calibrator()
-            # 对所有边记录hit（简化版：扫描最近创建的边）
-            conn = get_db()
-            try:
-                recent_edges = conn.execute(
-                    "SELECT from_fingerprint, to_fingerprint FROM edges ORDER BY created_at DESC LIMIT 100"
-                ).fetchall()
-                for edge in recent_edges:
-                    calibrator.record_hit(
-                        edge["from_fingerprint"], edge["to_fingerprint"]
-                    )
-            finally:
-                conn.close()
-            # 冻结超时视为新会话开始，解冻并清空队列（不存储中间态）
-            freeze_manager.unfreeze()
-            freeze_manager.clear_queue()
-        else:
-            # 正常解冻，取出队列中积累的消息并存储
-            unfreeze_result = freeze_manager.unfreeze()
-            queue_messages = unfreeze_result.get("queue_messages", [])
-            if queue_messages:
+        try:
+            while True:
                 try:
-                    from src.system.storage_flow import process_user_message
+                    event = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    elapsed = time.time() - last_heartbeat
+                    if elapsed >= 15:
+                        logger.info(f"[SSE] heartbeat ping, elapsed={elapsed:.1f}s")
+                        yield f": heartbeat\n\n"
+                        last_heartbeat = time.time()
+                    continue
 
-                    total_added = []
-                    for idx, msg in enumerate(queue_messages):
-                        result = process_user_message(msg, idx + 1)
-                        if result.get("success") and result.get("memories_added"):
-                            total_added.extend(result["memories_added"])
-                    if total_added:
-                        yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': total_added, 'total': len(total_added)}, ensure_ascii=False)}\n\n"
-                    logger.info(f"[SSE] stored {len(queue_messages)} queued messages")
-                except Exception as e:
-                    logger.error(f"[SSE] queued storage failed: {e}")
-
-        # 保存对话到数据库
-        from src.system.config import get_current_instance_config
-
-        instance_cfg = get_current_instance_config()
-        db_path = instance_cfg.get("db_path")
-        if db_path and final_content is not None:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS dialogue_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_message TEXT NOT NULL,
-                    assistant_message TEXT NOT NULL,
-                    turn INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                if event is None:
+                    logger.info("[SSE] got None, exiting loop")
+                    break
+                event_type = event.get("type", "content")
+                last_heartbeat = time.time()
+                logger.info(
+                    f"[SSE] yielding event: {event_type}, content_len={len(event.get('delta', event.get('content', '')))}"
                 )
-            """)
-            cur.execute(
-                "INSERT INTO dialogue_history (user_message, assistant_message, turn, created_at) VALUES (?, ?, ?, ?)",
-                (
-                    req.message,
-                    final_content,
-                    turn,
-                    __import__("datetime").datetime.now().isoformat(),
-                ),
-            )
-            conn.commit()
-            conn.close()
-            logger.info(f"[SSE] dialogue saved: turn={turn}")
+                if event_type == "reasoning":
+                    yield f"event: reasoning\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "content":
+                    yield f"event: content\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "tool_call":
+                    yield f"event: tool_call\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "tool_return":
+                    yield f"event: tool_return\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "done":
+                    final_content = event.get("content", "")
+                    final_has_recalled = event.get("has_recalled", False)
+                    yield f"event: done\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "error":
+                    yield f"event: error\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "storage_result":
+                    yield f"event: storage_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "agent_thinking":
+                    yield f"event: agent_thinking\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "agent_tool_call":
+                    yield f"event: agent_tool_call\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "agent_result":
+                    yield f"event: agent_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "storage_progress":
+                    yield f"event: storage_progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "heartbeat":
+                    yield f": heartbeat\n\n"
+        except asyncio.CancelledError:
+            logger.info("[SSE] Client disconnected, cleaning up...")
+        finally:
+            # ========== 流结束：解冻 + 45s计时器 + 存储 ==========
+            logger.info("[SSE] running cleanup (unfreeze + heartbeat stop)")
+            event_bus.stop_heartbeat()
 
-        # 流结束后追加到 dialogue_messages（保持上下文）
-        if final_content is not None:
-            response_message = {
-                "turn": turn,
-                "user_message": req.message,
-                "assistant_message": final_content,
-                "has_recalled": final_has_recalled,
-            }
-            dialogue_messages.append(response_message)
-            logger.info(f"[SSE] dialogue appended to memory: turn={turn}")
+            # 检查冻结是否超时（45s静息后自动触发report_hits）
+            if freeze_manager.check_timeout():
+                logger.info("[SSE] freeze timed out, triggering report_hits")
+                from src.tools.edge_calibrator import get_calibrator
+                from src.tools.memory_tools import get_db
 
-        # 45s静息计时器：流结束后如果召回过，启动计时器
-        if final_has_recalled:
-            recall_timer.start_if_recalled(True, [])
-            logger.info("[SSE] 45s recall timer started")
+                calibrator = get_calibrator()
+                # 对所有边记录hit（简化版：扫描最近创建的边）
+                conn = get_db()
+                try:
+                    recent_edges = conn.execute(
+                        "SELECT from_fingerprint, to_fingerprint FROM edges ORDER BY created_at DESC LIMIT 100"
+                    ).fetchall()
+                    for edge in recent_edges:
+                        calibrator.record_hit(
+                            edge["from_fingerprint"], edge["to_fingerprint"]
+                        )
+                finally:
+                    conn.close()
+                # 冻结超时视为新会话开始，解冻并清空队列（不存储中间态）
+                freeze_manager.unfreeze()
+                freeze_manager.clear_queue()
+            else:
+                # 正常解冻，取出队列中积累的消息并存储
+                unfreeze_result = freeze_manager.unfreeze()
+                queue_messages = unfreeze_result.get("queue_messages", [])
+                if queue_messages:
+                    try:
+                        from src.system.storage_flow import process_user_message
+
+                        total_added = []
+                        for idx, msg in enumerate(queue_messages):
+                            result = process_user_message(
+                                msg, idx + 1, event_bus=event_bus
+                            )
+                            if result.get("success") and result.get("memories_added"):
+                                total_added.extend(result["memories_added"])
+                        if total_added:
+                            import time as time_module
+
+                            start_time = time_module.time()
+                            transformed = []
+                            for m in total_added:
+                                memory = m.get("memory", "")
+                                transformed.append(
+                                    {
+                                        "memory_id": m.get("fingerprint", ""),
+                                        "key": m.get("key", ""),
+                                        "content_preview": memory[:100]
+                                        + ("..." if len(memory) > 100 else ""),
+                                    }
+                                )
+                            duration_ms = int((time_module.time() - start_time) * 1000)
+                            yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': transformed, 'total_memories': len(transformed), 'duration_ms': duration_ms}, ensure_ascii=False)}\n\n"
+                        logger.info(
+                            f"[SSE] stored {len(queue_messages)} queued messages"
+                        )
+                    except Exception as e:
+                        logger.error(f"[SSE] queued storage failed: {e}")
+
+            # 保存对话到数据库
+            if final_content:
+                from src.system.config import get_current_instance_config
+
+                instance_cfg = get_current_instance_config()
+                db_path = instance_cfg.get("db_path")
+                if db_path:
+                    try:
+                        conn = sqlite3.connect(db_path)
+                        cur = conn.cursor()
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS dialogue_history (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                user_message TEXT NOT NULL,
+                                assistant_message TEXT NOT NULL,
+                                turn INTEGER NOT NULL,
+                                created_at TEXT NOT NULL
+                            )
+                        """)
+                        cur.execute(
+                            "INSERT INTO dialogue_history (user_message, assistant_message, turn, created_at) VALUES (?, ?, ?, ?)",
+                            (
+                                req.message,
+                                final_content,
+                                turn,
+                                __import__("datetime").datetime.now().isoformat(),
+                            ),
+                        )
+                        conn.commit()
+                        conn.close()
+                        logger.info(f"[SSE] dialogue saved: turn={turn}")
+                    except Exception as e:
+                        logger.error(f"[SSE] dialogue save failed: {e}")
+
+            # 流结束后追加到 dialogue_messages（保持上下文）
+            if final_content:
+                response_message = {
+                    "turn": turn,
+                    "user_message": req.message,
+                    "assistant_message": final_content,
+                    "has_recalled": final_has_recalled,
+                }
+                dialogue_messages.append(response_message)
+                logger.info(f"[SSE] dialogue appended to memory: turn={turn}")
+
+            if final_has_recalled:
+                recall_timer.start_if_recalled(True, [])
+                logger.info("[SSE] 45s recall timer started")
 
     return StreamingResponse(
         event_generator(),
@@ -548,8 +641,8 @@ async def add_memory(mem: MemoryCreate):
 @app.get("/api/memory/stats")
 async def get_memory_stats():
     """Get comprehensive memory statistics"""
-    conn = get_db()
     try:
+        conn = get_db()
         total = conn.execute("SELECT COUNT(*) as count FROM memory").fetchone()["count"]
         key_stats = conn.execute(
             "SELECT key, COUNT(*) as count FROM memory GROUP BY key ORDER BY count DESC"
@@ -580,8 +673,32 @@ async def get_memory_stats():
         ).fetchone()["count"]
         top_recalled = conn.execute("""
             SELECT fingerprint, key, tag, recall_count, value_score, updated_at
-            FROM memory WHERE recall_count > 0 ORDER BY recall_count DESC LIMIT 10
+            FROM memory ORDER BY value_score DESC LIMIT 5
         """).fetchall()
+
+        # 周对比数据：上周（7-14天前）创建的记忆数和边数
+        last_week_memories = conn.execute("""
+            SELECT COUNT(*) as count FROM memory
+            WHERE created_at >= datetime('now', '-14 days')
+              AND created_at < datetime('now', '-7 days')
+        """).fetchone()["count"]
+        last_week_edges = conn.execute("""
+            SELECT COUNT(*) as count FROM edges
+            WHERE created_at >= datetime('now', '-14 days')
+              AND created_at < datetime('now', '-7 days')
+        """).fetchone()["count"]
+
+        # 最近30天召回次数时间序列（按天聚合）
+        recall_timeline = conn.execute("""
+            SELECT
+                DATE(created_at) as date,
+                SUM(recall_count) as total_recalls
+            FROM memory
+            WHERE created_at >= datetime('now', '-30 days')
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        """).fetchall()
+
         result = {
             "total": total,
             "by_key": {row["key"]: row["count"] for row in key_stats},
@@ -600,6 +717,26 @@ async def get_memory_stats():
                 }
                 for row in top_recalled
             ],
+            "week_comparison": {
+                "memories_last_week": last_week_memories,
+                "edges_last_week": last_week_edges,
+            },
+            "recall_timeline": [
+                {"date": row["date"], "recalls": row["total_recalls"]}
+                for row in recall_timeline
+            ],
+        }
+    except Exception as e:
+        # Instance may not have database yet, return empty stats
+        result = {
+            "total": 0,
+            "by_key": {},
+            "recall_distribution": {},
+            "value_distribution": {},
+            "recent_7days": 0,
+            "semantic_status": {"valid": 0},
+            "top_recalled": [],
+            "week_comparison": {"memories_last_week": 0, "edges_last_week": 0},
         }
     finally:
         conn.close()
@@ -607,15 +744,31 @@ async def get_memory_stats():
 
 
 @app.get("/api/memory/graph/nodes")
-async def memory_graph_nodes():
+async def memory_graph_nodes(
+    limit: int = Query(0, ge=0, description="返回条数，0表示返回全部"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+):
     conn = get_db()
     try:
-        rows = conn.execute(
-            "SELECT fingerprint, key, memory, tag, created_at, visibility, value_score, recall_count FROM memory ORDER BY visibility DESC, value_score DESC"
-        ).fetchall()
+        total_count = conn.execute("SELECT COUNT(*) as count FROM memory").fetchone()[
+            "count"
+        ]
+        if limit > 0:
+            rows = conn.execute(
+                "SELECT fingerprint, key, memory, tag, created_at, visibility, value_score, recall_count FROM memory ORDER BY visibility DESC, value_score DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT fingerprint, key, memory, tag, created_at, visibility, value_score, recall_count FROM memory ORDER BY visibility DESC, value_score DESC"
+            ).fetchall()
     finally:
         conn.close()
     edge_counts = _get_memory_edge_count_lookup()
+
+    engine = get_cluster_engine()
+    louvain_clusters = engine._fingerprint_to_cluster or {}
+
     nodes = [
         {
             "id": row["fingerprint"],
@@ -629,10 +782,11 @@ async def memory_graph_nodes():
             "value_score": row["value_score"] if "value_score" in row.keys() else 0.5,
             "recall_count": row["recall_count"] if "recall_count" in row.keys() else 0,
             "edge_count": edge_counts.get(row["fingerprint"], 0),
+            "cluster_id": louvain_clusters.get(row["fingerprint"]) or "unclustered",
         }
         for row in rows
     ]
-    return ok(nodes)
+    return ok({"nodes": nodes, "total": total_count, "limit": limit, "offset": offset})
 
 
 @app.get("/api/memory/graph/edges")
@@ -658,100 +812,6 @@ async def memory_graph_edges():
     return ok(edges)
 
 
-@app.get("/api/edge/stats")
-async def get_edge_stats():
-    conn = get_db()
-    try:
-        total = conn.execute("SELECT COUNT(*) as count FROM edges").fetchone()["count"]
-        strength_dist = conn.execute("""
-            SELECT
-                CASE
-                    WHEN strength < 0.3 THEN '0-0.3'
-                    WHEN strength < 0.6 THEN '0.3-0.6'
-                    WHEN strength < 0.9 THEN '0.6-0.9'
-                    ELSE '0.9+'
-                END as bucket,
-                COUNT(*) as count
-            FROM edges
-            GROUP BY bucket
-        """).fetchall()
-        eff_strength_dist = conn.execute("""
-            SELECT
-                CASE
-                    WHEN effective_strength < 0.3 THEN '0-0.3'
-                    WHEN effective_strength < 0.6 THEN '0.3-0.6'
-                    WHEN effective_strength < 0.9 THEN '0.6-0.9'
-                    ELSE '0.9+'
-                END as bucket,
-                COUNT(*) as count
-            FROM edges
-            GROUP BY bucket
-        """).fetchall()
-        avg_strength = (
-            conn.execute("SELECT AVG(strength) as avg FROM edges").fetchone()["avg"]
-            or 0
-        )
-        avg_eff_strength = (
-            conn.execute("SELECT AVG(effective_strength) as avg FROM edges").fetchone()[
-                "avg"
-            ]
-            or 0
-        )
-        top_hits = conn.execute("""
-            SELECT from_fingerprint, to_fingerprint, strength, effective_strength,
-                   hit_count, recall_count, reason
-            FROM edges
-            ORDER BY hit_count DESC
-            LIMIT 10
-        """).fetchall()
-        top_recalls = conn.execute("""
-            SELECT from_fingerprint, to_fingerprint, strength, effective_strength,
-                   hit_count, recall_count, reason
-            FROM edges
-            ORDER BY recall_count DESC
-            LIMIT 10
-        """).fetchall()
-    finally:
-        conn.close()
-    return ok(
-        {
-            "total": total,
-            "strength_distribution": {
-                row["bucket"]: row["count"] for row in strength_dist
-            },
-            "effective_strength_distribution": {
-                row["bucket"]: row["count"] for row in eff_strength_dist
-            },
-            "avg_strength": round(avg_strength, 3),
-            "avg_effective_strength": round(avg_eff_strength, 3),
-            "top_by_hits": [
-                {
-                    "source": row["from_fingerprint"],
-                    "target": row["to_fingerprint"],
-                    "strength": row["strength"],
-                    "effective_strength": row["effective_strength"],
-                    "hit_count": row["hit_count"],
-                    "recall_count": row["recall_count"],
-                    "reason": row["reason"],
-                }
-                for row in top_hits
-            ],
-            "top_by_recalls": [
-                {
-                    "source": row["from_fingerprint"],
-                    "target": row["to_fingerprint"],
-                    "strength": row["strength"],
-                    "effective_strength": row["effective_strength"],
-                    "hit_count": row["hit_count"],
-                    "recall_count": row["recall_count"],
-                    "reason": row["reason"],
-                }
-                for row in top_recalls
-            ],
-        }
-    )
-
-
 @app.put("/api/memory/{old_fp}")
 async def replace_memory(old_fp: str, update: MemoryUpdate):
     result = unwrap(
@@ -764,6 +824,31 @@ async def replace_memory(old_fp: str, update: MemoryUpdate):
         )
     )
     return ok(result)
+
+
+@app.get("/api/memory/clusters")
+async def get_louvain_clusters():
+    """获取Louvain聚类结果 - fingerprint到cluster_id的映射"""
+    engine = get_cluster_engine()
+    clusters = engine.load_clusters()
+    fp_to_cluster = engine._fingerprint_to_cluster
+    return ok(
+        {
+            "clusters": clusters,
+            "fingerprint_to_cluster": fp_to_cluster,
+        }
+    )
+
+
+@app.post("/api/memory/clusters/run")
+async def run_clustering_api():
+    """触发聚类重新计算"""
+    engine = get_cluster_engine()
+    result = engine.run_clustering()
+    if result.get("success"):
+        return ok(result)
+    else:
+        return fail(result.get("error", "聚类失败"))
 
 
 @app.delete("/api/memory/{fingerprint}")
@@ -1130,6 +1215,48 @@ async def reset_config():
     return ok(default)
 
 
+@app.get("/api/monitor/stream")
+async def monitor_stream():
+    """Agent 协作事件流监控端点 - SSE 实时推送"""
+    import asyncio
+    import time
+    import json
+
+    async def event_generator():
+        q: asyncio.Queue = asyncio.Queue()
+        broadcaster = EventBroadcaster.get_instance()
+        client_id = broadcaster.register(q)
+        heartbeat_count = 0
+
+        try:
+            # 发送初始连接事件
+            yield f"event: connected\ndata: {json.dumps({'type': 'connected', 'client_id': client_id})}\n\n"
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15)
+                    if event is None:
+                        break
+                    yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    # 发送心跳保持连接
+                    heartbeat_count += 1
+                    yield f": heartbeat {heartbeat_count}\n\n"
+
+        finally:
+            broadcaster.unregister(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/api/value/top/{key}")
 async def get_top_memories_by_key(key: str, limit: int = 10):
     """Get top memories by value score for a specific key"""
@@ -1229,6 +1356,139 @@ async def get_top_edges(limit: int = 10):
         for row in rows
     ]
     return ok(edges)
+
+
+@app.get("/api/edge/stats")
+async def get_edge_stats():
+    try:
+        conn = get_db()
+        total = conn.execute("SELECT COUNT(*) as count FROM edges").fetchone()["count"]
+        strength_dist = conn.execute("""
+            SELECT
+                CASE
+                    WHEN strength < 0.3 THEN '0-0.3'
+                    WHEN strength < 0.6 THEN '0.3-0.6'
+                    WHEN strength < 0.9 THEN '0.6-0.9'
+                    ELSE '0.9+'
+                END as bucket,
+                COUNT(*) as count
+            FROM edges
+            GROUP BY bucket
+        """).fetchall()
+        eff_strength_dist = conn.execute("""
+            SELECT
+                CASE
+                    WHEN effective_strength < 0.3 THEN '0-0.3'
+                    WHEN effective_strength < 0.6 THEN '0.3-0.6'
+                    WHEN effective_strength < 0.9 THEN '0.6-0.9'
+                    ELSE '0.9+'
+                END as bucket,
+                COUNT(*) as count
+            FROM edges
+            GROUP BY bucket
+        """).fetchall()
+        avg_strength = (
+            conn.execute("SELECT AVG(strength) as avg FROM edges").fetchone()["avg"]
+            or 0
+        )
+        avg_eff_strength = (
+            conn.execute("SELECT AVG(effective_strength) as avg FROM edges").fetchone()[
+                "avg"
+            ]
+            or 0
+        )
+        top_hits = conn.execute("""
+            SELECT from_fingerprint, to_fingerprint, strength, effective_strength,
+                   hit_count, recall_count, reason
+            FROM edges
+            ORDER BY hit_count DESC
+            LIMIT 10
+        """).fetchall()
+        top_recalls = conn.execute("""
+            SELECT from_fingerprint, to_fingerprint, strength, effective_strength,
+                   hit_count, recall_count, reason
+            FROM edges
+            ORDER BY recall_count DESC
+            LIMIT 10
+        """).fetchall()
+
+        cluster_stats = get_cluster_engine().get_stats()
+    except Exception as e:
+        # Instance may not have database yet
+        conn = None
+        total = 0
+        strength_dist = []
+        eff_strength_dist = []
+        avg_strength = 0
+        avg_eff_strength = 0
+        top_hits = []
+        top_recalls = []
+        cluster_stats = {"cluster_count": 0}
+    finally:
+        if conn:
+            conn.close()
+    return ok(
+        {
+            "total": total,
+            "strength_distribution": {
+                row["bucket"]: row["count"] for row in strength_dist
+            }
+            if strength_dist
+            else {},
+            "effective_strength_distribution": {
+                row["bucket"]: row["count"] for row in eff_strength_dist
+            }
+            if eff_strength_dist
+            else {},
+            "avg_strength": round(avg_strength, 3),
+            "avg_effective_strength": round(avg_eff_strength, 3),
+            "clusters_count": cluster_stats.get("cluster_count", 0),
+            "top_by_hits": [
+                {
+                    "source": row["from_fingerprint"],
+                    "target": row["to_fingerprint"],
+                    "strength": row["strength"],
+                    "effective_strength": row["effective_strength"],
+                    "hit_count": row["hit_count"],
+                    "recall_count": row["recall_count"],
+                    "reason": row["reason"],
+                }
+                for row in top_hits
+            ],
+            "top_by_recalls": [
+                {
+                    "source": row["from_fingerprint"],
+                    "target": row["to_fingerprint"],
+                    "strength": row["strength"],
+                    "effective_strength": row["effective_strength"],
+                    "hit_count": row["hit_count"],
+                    "recall_count": row["recall_count"],
+                    "reason": row["reason"],
+                }
+                for row in top_recalls
+            ],
+        }
+    )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """服务启动时执行数据库迁移"""
+    logger.info("[Startup] Running database migrations...")
+    from src.db.migrate import migrate_db
+
+    result = migrate_db()
+    if result.get("success"):
+        logger.info("[Startup] Database migrations completed")
+    else:
+        logger.warning(f"[Startup] Some migrations failed: {result}")
+
+    logger.info("[Startup] Initializing databases...")
+    init_database()
+    init_sub_database()
+    init_memory_space()
+    init_keys_directory()
+    logger.info("[Startup] Initialization complete")
 
 
 if __name__ == "__main__":

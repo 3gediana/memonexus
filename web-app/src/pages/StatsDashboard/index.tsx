@@ -116,6 +116,8 @@ export function StatsDashboard() {
           value_distribution: adaptedValueDist,
           recent_7days: memStats.recent_7days || 0,
           top_recalled: memStats.top_recalled || [],
+          week_comparison: memStats.week_comparison || { memories_last_week: 0, edges_last_week: 0 },
+          recall_timeline: memStats.recall_timeline || [],
         };
       }
 
@@ -199,10 +201,21 @@ export function StatsDashboard() {
     );
   }
 
+  // 计算周对比趋势
+  const calcTrend = (current: number, lastWeek: number) => {
+    if (lastWeek === 0 && current > 0) return { value: 100, isPositive: true };
+    if (lastWeek === 0) return { value: 0, isPositive: true };
+    const change = Math.round(((current - lastWeek) / lastWeek) * 100);
+    return { value: Math.abs(change), isPositive: change >= 0 };
+  };
+
+  const memoryTrend = calcTrend(stats.total_memories, stats.week_comparison?.memories_last_week || 0);
+  const edgeTrend = calcTrend(stats.total_edges, stats.week_comparison?.edges_last_week || 0);
+
   return (
-    <div className="min-h-screen neural-grid">
+    <div className="h-full overflow-y-auto neural-grid">
       {/* Header */}
-      <header className="px-8 py-6 border-b border-neural-border">
+      <header className="px-8 py-6 border-b border-neural-border flex-shrink-0">
         <div className="max-w-7xl mx-auto">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 to-purple-500 flex items-center justify-center">
@@ -217,7 +230,8 @@ export function StatsDashboard() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-8 py-8">
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-7xl mx-auto px-8 py-8">
         {/* Stats Cards */}
         <div className="grid grid-cols-4 gap-5 mb-8">
           <div
@@ -228,7 +242,7 @@ export function StatsDashboard() {
               title="总记忆数"
               value={stats.total_memories || 0}
               icon={<Icons.Brain />}
-              trend={{ value: 12, isPositive: true }}
+              trend={memoryTrend.value > 0 ? memoryTrend : undefined}
               color="#00d4ff"
             />
           </div>
@@ -240,7 +254,7 @@ export function StatsDashboard() {
               title="总边数"
               value={stats.total_edges || 0}
               icon={<Icons.Link />}
-              trend={{ value: 8, isPositive: true }}
+              trend={edgeTrend.value > 0 ? edgeTrend : undefined}
               color="#a855f7"
             />
           </div>
@@ -252,7 +266,6 @@ export function StatsDashboard() {
               title="总簇数"
               value={stats.clusters_count || 0}
               icon={<Icons.Network />}
-              trend={{ value: 3, isPositive: false }}
               color="#22c55e"
             />
           </div>
@@ -264,7 +277,6 @@ export function StatsDashboard() {
               title="7日新增"
               value={stats.recent_7days || 0}
               icon={<Icons.TrendingUp />}
-              trend={{ value: 25, isPositive: true }}
               color="#f97316"
             />
           </div>
@@ -282,8 +294,8 @@ export function StatsDashboard() {
 
         {/* Charts Row 2 */}
         <div className="grid grid-cols-2 gap-5 mb-5">
-          <ChartCard title="召回次数分布">
-            <RecallLineChart data={stats.recall_distribution || []} />
+          <ChartCard title="召回次数趋势（30天）">
+            <RecallLineChart data={stats.recall_timeline || []} />
           </ChartCard>
           <ChartCard title="边强度分布">
             <StrengthPieChart data={stats.by_strength || []} />
@@ -294,6 +306,7 @@ export function StatsDashboard() {
         <ChartCard title="高价值记忆 TOP5" className="mt-5">
           <TopMemoryList data={stats.top_recalled || []} />
         </ChartCard>
+        </div>
       </main>
 
       {/* Footer */}

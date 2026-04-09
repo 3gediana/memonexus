@@ -164,8 +164,9 @@ def _get_memory_by_fingerprint_impl(fingerprints: list):
 
 
 class KeyAgent:
-    def __init__(self, key: str):
+    def __init__(self, key: str, event_bus=None):
         self.key = key
+        self.event_bus = event_bus
         self.system_prompt = self._build_decision_prompt()
         self.tools = KEY_AGENT_TOOLS
         self.tool_handlers = {
@@ -285,6 +286,9 @@ class KeyAgent:
                         "existing_memories": existing_memories,
                     },
                 )
+
+            if self.event_bus:
+                self.event_bus.emit_thinking("KeyAgent", f"processing {self.key}")
 
             messages = [
                 {"role": "system", "content": self.system_prompt},

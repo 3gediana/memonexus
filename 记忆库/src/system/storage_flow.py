@@ -57,10 +57,14 @@ key：{key}""",
         return memory[:20]
 
 
-def _rollback_memories(fingerprints: list[str]):
-    """回滚：删除已添加的memory"""
+def _rollback_memories(fingerprints: list[str], sub_id: int = None):
+    """回滚：删除已添加的memory和sub记录"""
+    from src.tools.sub_tools import delete_sub
+
     for fp in fingerprints:
         _delete_memory_by_fp(fp)
+    if sub_id:
+        delete_sub(sub_id)
 
 
 def _delete_memory_by_fp(fingerprint: str) -> dict:
@@ -83,7 +87,7 @@ def _delete_memory_by_fp(fingerprint: str) -> dict:
 
 
 def _process_with_key_agent(
-    key: str, memory: str, tag: str, existing_memories: list
+    key: str, memory: str, tag: str, existing_memories: list, event_bus=None
 ) -> dict:
     """
     使用KeyAgent处理单条候选记忆（悬空记忆阶段）
@@ -98,7 +102,7 @@ def _process_with_key_agent(
     - 工具：只有build_edges
     """
     # 阶段1：决策（给tag-指纹列表，模型可自行查询原文）
-    agent = KeyAgent(key)
+    agent = KeyAgent(key, event_bus=event_bus)
     result = agent.process_candidate(memory, tag, existing_memories)
 
     action = result.get("action")
@@ -138,21 +142,25 @@ def _process_with_key_agent(
             cluster_result = _assign_to_cluster(new_fp, key, memory, resolved_tag)
 
             # 阶段2：分批建边（独立上下文，传入原文）
-            same_key_edges = _build_same_key_edges_batched(new_fp, key, memory)
+            same_key_edges = _build_same_key_edges_batched(
+                new_fp, key, memory, event_bus=event_bus
+            )
 
             # 如果触发了合并，执行 LLM 合并
             merged_memory = None
             final_fp = new_fp
             if cluster_result.get("merged"):
                 merge_result = _merge_cluster(
-                    cluster_result["cluster_id"], cluster_result["merged_memories"]
+                    cluster_result["cluster_id"],
+                    cluster_result["merged_memories"],
+                    event_bus=event_bus,
                 )
                 if merge_result.get("success"):
                     merged_memory = merge_result.get("merged_memory")
                     final_fp = merge_result.get("fingerprint")
                     # 合并后的新记忆重新建边
                     same_key_edges = _build_same_key_edges_batched(
-                        final_fp, key, merged_memory
+                        final_fp, key, merged_memory, event_bus=event_bus
                     )
 
             return {
@@ -186,7 +194,9 @@ def _process_with_key_agent(
             new_fp = replace_result["added"]["fingerprint"]
 
             # 阶段2：分批建边（独立上下文，传入原文）
-            same_key_edges = _build_same_key_edges_batched(new_fp, key, memory)
+            same_key_edges = _build_same_key_edges_batched(
+                new_fp, key, memory, event_bus=event_bus
+            )
 
             # 如果边建立失败，尝试用旧边重建
             if not same_key_edges.get("success") and old_edges:
@@ -251,7 +261,9 @@ def _get_memory_content_by_fp(fp: str) -> str:
         return ""
 
 
-def _build_same_key_edges_batched(new_fp: str, key: str, new_memory: str) -> dict:
+def _build_same_key_edges_batched(
+    new_fp: str, key: str, new_memory: str, event_bus=None
+) -> dict:
     """
     分批建立同key关联边
 
@@ -263,7 +275,7 @@ def _build_same_key_edges_batched(new_fp: str, key: str, new_memory: str) -> dic
     if not existing_memories:
         return {"success": True, "edges_created": 0}
 
-    agent = KeyAgent(key)
+    agent = KeyAgent(key, event_bus=event_bus)
     total_edges_created = 0
 
     # 分批处理
@@ -347,7 +359,9 @@ def _recreate_edges_for_new_fp(new_fp: str, old_fp: str, old_edges: list):
         create_edges(edge_list)
 
 
-def _process_cross_key_association(fingerprint: str, memory: str, key: str) -> dict:
+def _process_cross_key_association(
+    fingerprint: str, memory: str, key: str, event_bus=None
+) -> dict:
     """
     处理跨key关联（AssociationAgent）
 
@@ -383,7 +397,7 @@ def _process_cross_key_association(fingerprint: str, memory: str, key: str) -> d
 
         for i in range(0, len(filtered_candidates), BATCH_SIZE):
             batch = filtered_candidates[i : i + BATCH_SIZE]
-            edges = agent.process(main_memory, batch)
+            edges = agent.process(main_memory, batch, event_bus=event_bus)
 
             if edges:
                 edge_list = []
@@ -437,7 +451,7 @@ def _check_and_prune_if_needed():
         logger.warning(f"淘汰检查失败: {e}")
 
 
-def process_user_message(message: str, turn_index: int) -> dict:
+def process_user_message(message: str, turn_index: int, event_bus=None) -> dict:
     """
     存储流程编排
 
@@ -460,8 +474,16 @@ def process_user_message(message: str, turn_index: int) -> dict:
     sub_id = sub_result["id"]
 
     # 检查点2：调用RoutingAgent分析
+    if event_bus:
+        event_bus.emit_thinking("RoutingAgent", "analyzing_message")
+
     routing_agent = RoutingAgent(BUILT_IN_KEYS)
     candidates = call_with_retry(routing_agent.analyze_message, message)
+
+    if event_bus:
+        event_bus.emit_result(
+            "RoutingAgent", {"candidates": len(candidates) if candidates else 0}
+        )
 
     if not candidates:
         return {"success": True, "sub_id": sub_id, "memories_added": [], "rejected": []}
@@ -502,10 +524,19 @@ def process_user_message(message: str, turn_index: int) -> dict:
         result = None
         for attempt in range(max_retries):
             try:
+                if event_bus:
+                    event_bus.emit_thinking(
+                        "KeyAgent", f"processing key={key} attempt={attempt + 1}"
+                    )
+
                 result = _process_with_key_agent(
-                    key, memory, pre_tag, existing_memories
+                    key, memory, pre_tag, existing_memories, event_bus=event_bus
                 )
                 if result.get("success", False):
+                    if event_bus:
+                        event_bus.emit_result(
+                            "KeyAgent", {"action": result.get("action"), "key": key}
+                        )
                     break
                 # 模型返回失败，重试
                 if attempt < max_retries - 1:
@@ -513,7 +544,7 @@ def process_user_message(message: str, turn_index: int) -> dict:
             except Exception as e:
                 # 系统异常：回滚所有已存储的记忆
                 logger.error(f"KeyAgent系统异常，回滚: key={key}, error={e}")
-                _rollback_memories(added_fps)
+                _rollback_memories(added_fps, sub_id)
                 return {
                     "success": False,
                     "error": f"SYSTEM_ERROR: {e}",
@@ -550,9 +581,21 @@ def process_user_message(message: str, turn_index: int) -> dict:
 
     # 检查点5：KeyAgent完全静息后，统一触发跨key关联（AssociationAgent）
     for item in added_memories:
+        if event_bus:
+            event_bus.emit_thinking(
+                "AssociationAgent", f"building_edges for {item['fingerprint'][:8]}"
+            )
+
         assoc_result = _process_cross_key_association(
-            item["fingerprint"], item["memory"], item["key"]
+            item["fingerprint"], item["memory"], item["key"], event_bus=event_bus
         )
+
+        if event_bus:
+            event_bus.emit_result(
+                "AssociationAgent",
+                {"edges_created": assoc_result.get("edges_created", 0)},
+            )
+
         if not assoc_result.get("success"):
             logger.warning(
                 f"Cross-key association failed for {item['fingerprint']}: {assoc_result.get('error')}"
@@ -579,7 +622,7 @@ def _assign_to_cluster(fingerprint: str, key: str, memory: str, tag: str) -> dic
         return {"success": False, "error": str(e), "merged": False}
 
 
-def _merge_cluster(cluster_id: str, memories: list) -> dict:
+def _merge_cluster(cluster_id: str, memories: list, event_bus=None) -> dict:
     """LLM 合并簇内记忆（模型自行判断是否合并）"""
     try:
         from src.system.llm_client import chat_completion
@@ -649,7 +692,7 @@ KEEP_SEPARATE
 
         # 完成合并（删除旧记忆，插入新记忆，重建边）
         result = _complete_merge_with_rebuild(
-            cluster_id, merged_fp, merged_text, merged_tag
+            cluster_id, merged_fp, merged_text, merged_tag, event_bus=event_bus
         )
 
         if result.get("success"):
@@ -665,7 +708,9 @@ KEEP_SEPARATE
         return {"success": False, "error": str(e)}
 
 
-def _complete_merge_with_rebuild(cluster_id, merged_fp, merged_text, merged_tag):
+def _complete_merge_with_rebuild(
+    cluster_id, merged_fp, merged_text, merged_tag, event_bus=None
+):
     """完成合并：使用 complete_cluster_merge 在单个事务中完成所有操作"""
     try:
         from src.tools.memory_tools import get_db
@@ -690,7 +735,7 @@ def _complete_merge_with_rebuild(cluster_id, merged_fp, merged_text, merged_tag)
         finally:
             conn.close()
 
-        _build_same_key_edges_batched(actual_fp, key, merged_text)
+        _build_same_key_edges_batched(actual_fp, key, merged_text, event_bus=event_bus)
 
         return {
             "success": True,

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { AGENTS } from '../../mock/agentFlow';
+import { useStreamConnection, StreamEvent } from '../../hooks/useStreamConnection';
 
 const CARD_WIDTH = 160;
 const CARD_HEIGHT = 90;
@@ -244,93 +245,71 @@ export function AgentFlow() {
       if (res.ok) {
         const json = await res.json();
         const messages = json.data || json;
-        const lastMessage = messages[messages.length - 1];
-
-        if (lastMessage) {
-          const generatedEvents: AgentEvent[] = [];
-          const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-
-          if (lastMessage.recall_blocks?.length > 0) {
-            generatedEvents.push({
-              id: `evt-${Date.now()}-1`,
-              timestamp: ts,
-              agentLabel: '对话Agent',
-              agentColor: '#06B6D4',
-              direction: 'call',
-              toolName: 'recall_from_key',
-              result: `召回 ${lastMessage.recall_blocks.length} 条记忆`,
-            });
+        // Only fetch historical messages for display, no simulation
+        setEvents(prev => {
+          if (messages.length > 0 && prev.length === 0) {
+            return prev;
           }
-
-          if (lastMessage.storage_result) {
-            const sr = lastMessage.storage_result;
-            if (sr.memories_added?.length > 0) {
-              const keysUsed = [...new Set(sr.memories_added.map((m: any) => m.key))];
-              generatedEvents.push({
-                id: `evt-${Date.now()}-2`,
-                timestamp: ts,
-                agentLabel: '路由Agent',
-                agentColor: '#3B82F6',
-                direction: 'return',
-                toolName: 'assign_memory_to_keys',
-                result: `分配到 ${keysUsed.length} 个Key: ${keysUsed.join(', ')}`,
-                duration: sr.duration_ms,
-              });
-              keysUsed.forEach((key: string, i: number) => {
-                generatedEvents.push({
-                  id: `evt-${Date.now()}-3-${i}`,
-                  timestamp: ts,
-                  agentLabel: '记忆审核',
-                  agentColor: '#22C55E',
-                  direction: 'return',
-                  toolName: 'add_memory_to_key',
-                  result: `✓ 新增到 ${key}`,
-                });
-              });
-              generatedEvents.push({
-                id: `evt-${Date.now()}-4`,
-                timestamp: ts,
-                agentLabel: '同Key建边',
-                agentColor: '#F97316',
-                direction: 'return',
-                toolName: 'build_edges',
-                result: `建立同Key关联边`,
-              });
-              generatedEvents.push({
-                id: `evt-${Date.now()}-5`,
-                timestamp: ts,
-                agentLabel: '跨Key关联',
-                agentColor: '#A855F7',
-                direction: 'return',
-                toolName: 'create_edges',
-                result: `建立跨Key关联`,
-              });
-            }
-          }
-
-          if (generatedEvents.length > 0) {
-            setEvents(generatedEvents);
-          }
-        }
+          return prev;
+        });
       }
     } catch (err) {
       console.error('Failed to fetch dialogue events:', err);
     }
   }, []);
 
+  const { connect, disconnect } = useStreamConnection({
+    onAgentThinking: (agent, phase) => {
+      setEvents(prev => [...prev, {
+        id: `evt_${Date.now()}_${Math.random()}`,
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        agentLabel: agent,
+        agentColor: '#8b5cf6',
+        direction: 'call',
+        toolName: `[thinking] ${phase}`,
+      }]);
+    },
+    onAgentToolCall: (agent, tool, params) => {
+      setEvents(prev => [...prev, {
+        id: `evt_${Date.now()}_${Math.random()}`,
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        agentLabel: agent,
+        agentColor: '#8b5cf6',
+        direction: 'call',
+        toolName: tool,
+        params: params ? JSON.stringify(params) : undefined,
+      }]);
+    },
+    onAgentResult: (agent, result) => {
+      setEvents(prev => [...prev, {
+        id: `evt_${Date.now()}_${Math.random()}`,
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        agentLabel: agent,
+        agentColor: '#22C55E',
+        direction: 'return',
+        toolName: 'result',
+        result: typeof result === 'string' ? result : JSON.stringify(result),
+      }]);
+    },
+  });
+
   useEffect(() => {
     const init = async () => {
       setLoading(true);
-      await Promise.all([fetchMonitorData(), fetchDialogueEvents()]);
+      await fetchMonitorData();
       setLoading(false);
     };
     init();
 
+    // Establish SSE connection
+    connect('', '', 0);
+
     pollTimerRef.current = setInterval(fetchMonitorData, 10000);
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      disconnect();
     };
-  }, [fetchMonitorData, fetchDialogueEvents]);
+  }, [fetchMonitorData, connect, disconnect]);
 
   if (loading) {
     return (
@@ -342,9 +321,6 @@ export function AgentFlow() {
       </div>
     );
   }
-
-  const topKeys = keyAgents.slice(0, Math.ceil(keyAgents.length / 2));
-  const bottomKeys = keyAgents.slice(Math.ceil(keyAgents.length / 2));
 
   return (
     <div className="h-full neural-grid flex overflow-hidden">
@@ -367,7 +343,7 @@ export function AgentFlow() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => { fetchMonitorData(); fetchDialogueEvents(); }}
+                onClick={() => { fetchMonitorData(); }}
                 className="px-3 py-1.5 rounded-lg text-xs bg-neural-bg/50 hover:bg-neural-bg border border-neural-border transition-colors text-slate-400"
               >
                 刷新

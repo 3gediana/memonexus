@@ -25,7 +25,7 @@ export function ChatDemo() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const reasoningRef = useRef('');
-  const [speed, setSpeed] = useState(1);
+  const [speed] = useState(1);
   const [currentEvents, setCurrentEvents] = useState<Array<{
     id: string;
     timestamp: string;
@@ -36,6 +36,7 @@ export function ChatDemo() {
     params?: string;
     result?: string;
     duration?: number;
+    isOrphan?: boolean;
   }>>([]);
   const [storageResult, setStorageResult] = useState<StorageResult | null>(null);
   const [currentInstanceId, setCurrentInstanceId] = useState<string>('');
@@ -50,9 +51,23 @@ export function ChatDemo() {
         setCurrentInstanceId(name || 'study_assistant');
       })
       .catch(() => setCurrentInstanceId('study_assistant'));
+
+    const handleInstanceSwitched = () => {
+      fetch('/api/instances/current')
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          const name = data?.data?.name || data?.data?.id;
+          setCurrentInstanceId(name || 'study_assistant');
+        })
+        .catch(() => setCurrentInstanceId('study_assistant'));
+    };
+    window.addEventListener('instance-switched', handleInstanceSwitched);
+
+    return () => {
+      window.removeEventListener('instance-switched', handleInstanceSwitched);
+    };
   }, []);
 
-  // Load chat history from localStorage when instance changes
   useEffect(() => {
     if (!currentInstanceId) return;
     const stored = localStorage.getItem(`chat_history_${currentInstanceId}`);
@@ -64,7 +79,6 @@ export function ChatDemo() {
     }
   }, [currentInstanceId]);
 
-  // Save chat history to localStorage whenever messages change
   useEffect(() => {
     if (!currentInstanceId || messages.length === 0) return;
     localStorage.setItem(`chat_history_${currentInstanceId}`, JSON.stringify(messages));
@@ -73,7 +87,7 @@ export function ChatDemo() {
   const { connect, disconnect } = useStreamConnection({
     onReasoning: (delta) => {
       setIsThinking(true);
-      reasoningRef.current += delta;
+      reasoningRef.current = delta;
     },
     onContent: (delta) => {
       setIsThinking(false);
@@ -85,15 +99,33 @@ export function ChatDemo() {
         return [...prev, { id: Date.now().toString(), turn: prev.length + 1, role: 'assistant', content: delta }];
       });
     },
-    onDone: (content, hasRecalled) => {
+    onDone: (content, hasRecalled, recallBlocks) => {
       setIsStreaming(false);
       setIsThinking(false);
       const finalReasoning = reasoningRef.current || undefined;
-      if (finalReasoning) {
+      if (hasRecalled || (recallBlocks && recallBlocks.length > 0)) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'assistant') {
+            return [...prev.slice(0, -1), { ...last, reasoning: finalReasoning, recall_blocks: recallBlocks || [] }];
+          }
+          return prev;
+        });
+      } else if (finalReasoning) {
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last?.role === 'assistant') {
             return [...prev.slice(0, -1), { ...last, reasoning: finalReasoning }];
+          }
+          return prev;
+        });
+      } else if (content) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'assistant') {
+            if (!last.content || last.content.trim() === '') {
+              return [...prev.slice(0, -1), { ...last, content }];
+            }
           }
           return prev;
         });
@@ -103,6 +135,12 @@ export function ChatDemo() {
     onError: (message) => {
       setIsStreaming(false);
       setIsThinking(false);
+      setMessages(prev => [...prev, {
+        id: `error_${Date.now()}`,
+        turn: prev.length > 0 ? prev[prev.length - 1].turn : 1,
+        role: 'assistant' as const,
+        content: `Error: ${message}`,
+      }]);
       console.error('Stream error:', message);
     },
     onStorageResult: (result) => {
@@ -150,7 +188,6 @@ export function ChatDemo() {
           updated[existingIndex] = { ...updated[existingIndex], result, direction: 'return' };
           return updated;
         }
-        // If no call event found, add a return event directly
         return [...prev, {
           id: tool_call_id,
           timestamp: new Date().toLocaleTimeString(),
@@ -163,8 +200,70 @@ export function ChatDemo() {
           direction: 'return' as const,
           toolName: tool_name,
           result: result,
+          isOrphan: true,
         }];
       });
+    },
+    onAgentThinking: (agent, phase) => {
+      setCurrentEvents(prev => [...prev, {
+        id: `agent_thinking_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: new Date().toLocaleTimeString(),
+        agentLabel: agent,
+        agentColor: '#8b5cf6',
+        direction: 'call' as const,
+        toolName: `[thinking] ${phase}`,
+      }]);
+    },
+    onAgentToolCall: (agent, tool, params) => {
+      const eventId = `agent_tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      setCurrentEvents(prev => [...prev, {
+        id: eventId,
+        timestamp: new Date().toLocaleTimeString(),
+        agentLabel: agent,
+        agentColor: '#06b6d4',
+        direction: 'call' as const,
+        toolName: `[${agent}] ${tool}`,
+        params: JSON.stringify(params).slice(0, 200),
+      }]);
+    },
+    onAgentResult: (agent, result) => {
+      setCurrentEvents(prev => {
+        const firstAgentCallIndex = prev.findIndex(
+          e => e.agentLabel === agent && e.direction === 'call' && e.toolName.startsWith(`[${agent}]`)
+        );
+        if (firstAgentCallIndex >= 0) {
+          const updated = [...prev];
+          updated[firstAgentCallIndex] = {
+            ...updated[firstAgentCallIndex],
+            result: JSON.stringify(result).slice(0, 200),
+            direction: 'return' as const
+          };
+          return updated;
+        }
+        return [...prev, {
+          id: `agent_result_${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString(),
+          agentLabel: agent,
+          agentColor: '#10b981',
+          direction: 'return' as const,
+          toolName: `[result]`,
+          result: JSON.stringify(result).slice(0, 200),
+        }];
+      });
+    },
+    onStorageProgress: (stage, progress) => {
+      setCurrentEvents(prev => [...prev, {
+        id: `storage_progress_${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString(),
+        agentLabel: 'Storage',
+        agentColor: '#f59e0b',
+        direction: 'call' as const,
+        toolName: `[${stage}]`,
+        result: JSON.stringify(progress).slice(0, 200),
+      }]);
+    },
+    onHeartbeat: () => {
+      // Heartbeat events are not displayed, only used for keepalive detection
     },
   });
 
@@ -176,13 +275,77 @@ export function ChatDemo() {
     scrollToBottom();
   }, [messages, currentEvents, storageResult]);
 
-  const handleNewConversation = () => {
+  const handleNewConversation = async () => {
+    disconnect();
+    setIsStreaming(false);
+    setIsThinking(false);
     setMessages([]);
     setCurrentEvents([]);
     setStorageResult(null);
     reasoningRef.current = '';
-    disconnect();
-    fetch('/api/dialogue/clear', { method: 'POST' }).catch(console.error);
+    if (currentInstanceId) {
+      localStorage.removeItem(`chat_history_${currentInstanceId}`);
+    }
+
+    try {
+      const res = await fetch('/api/dialogue/clear', { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.data?.storage_events) {
+        const events = data.data.storage_events;
+        for (const event of events) {
+          if (event.type === 'agent_thinking') {
+            setCurrentEvents(prev => [...prev, {
+              id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              timestamp: new Date().toLocaleTimeString(),
+              agentLabel: event.agent,
+              agentColor: '#8b5cf6',
+              direction: 'call' as const,
+              toolName: `[thinking] ${event.phase}`,
+            }]);
+          } else if (event.type === 'agent_tool_call') {
+            setCurrentEvents(prev => [...prev, {
+              id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              timestamp: new Date().toLocaleTimeString(),
+              agentLabel: event.agent,
+              agentColor: '#06b6d4',
+              direction: 'call' as const,
+              toolName: `[${event.agent}] ${event.tool}`,
+              params: JSON.stringify(event.params).slice(0, 200),
+            }]);
+          } else if (event.type === 'agent_result') {
+            setCurrentEvents(prev => {
+              const lastCallIndex = prev.findIndex(e => e.direction === 'call' && e.agentLabel === event.agent);
+              if (lastCallIndex >= 0) {
+                const updated = [...prev];
+                updated[lastCallIndex] = { ...updated[lastCallIndex], result: JSON.stringify(event.result).slice(0, 200), direction: 'return' };
+                return updated;
+              }
+              return [...prev, {
+                id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                timestamp: new Date().toLocaleTimeString(),
+                agentLabel: event.agent,
+                agentColor: '#10b981',
+                direction: 'return' as const,
+                toolName: `[result]`,
+                result: JSON.stringify(event.result).slice(0, 200),
+              }];
+            });
+          } else if (event.type === 'storage_progress') {
+            setCurrentEvents(prev => [...prev, {
+              id: `clear_${event.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              timestamp: new Date().toLocaleTimeString(),
+              agentLabel: 'Storage',
+              agentColor: '#f59e0b',
+              direction: 'call' as const,
+              toolName: `[progress] ${event.stage}`,
+              params: JSON.stringify(event.progress || {}).slice(0, 200),
+            }]);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to clear dialogue:', e);
+    }
   };
 
   const handleSend = () => {
@@ -220,12 +383,12 @@ export function ChatDemo() {
               </svg>
             </div>
             <div className="flex-1">
-              <h1 className="text-xl font-bold text-white font-space">对话演示</h1>
-              <p className="text-sm text-slate-400 font-chinese">记忆召回与存储过程可视化</p>
+              <h1 className="text-xl font-bold text-white font-space">Dialog Demo</h1>
+              <p className="text-sm text-slate-400 font-chinese">Memory Recall & Storage Visualization</p>
             </div>
             {isThinking && (
               <div className="flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded-full">
-                <span className="animate-pulse text-amber-400 text-xs">思考中...</span>
+                <span className="animate-pulse text-amber-400 text-xs">Thinking...</span>
               </div>
             )}
           </div>
@@ -240,8 +403,8 @@ export function ChatDemo() {
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                   </svg>
                 </div>
-                <h3 className="text-white font-medium mb-2">开始新对话</h3>
-                <p className="text-sm text-slate-400">输入消息开始与记忆助手的对话</p>
+                <h3 className="text-white font-medium mb-2">Start New Conversation</h3>
+                <p className="text-sm text-slate-400">Send a message to start chatting with the memory assistant</p>
               </div>
             )}
 
@@ -251,7 +414,7 @@ export function ChatDemo() {
                 {msg.role === 'assistant' && storageResult && index === messages.length - 1 && (
                   <div className="mt-3 ml-4 pl-4 border-l-2 border-emerald-500/50">
                     <div className="flex items-center gap-2 text-xs text-emerald-400 mb-2">
-                      <span>已存储新记忆</span>
+                      <span>Stored new memories</span>
                       <span className="text-slate-500">{storageResult.duration_ms}ms</span>
                     </div>
                     <div className="bg-neural-card/80 border border-neural-border rounded-lg p-3">
@@ -259,14 +422,14 @@ export function ChatDemo() {
                         storageResult.memories_added.map((m, i) => (
                           <div key={i} className="flex items-center gap-2 mb-1">
                             <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs">{m.key}</span>
-                            <span className="text-xs text-slate-400">新增</span>
+                            <span className="text-xs text-slate-400">new</span>
                             <span className="text-sm text-slate-300 truncate">{m.content_preview}</span>
                           </div>
                         ))
                       ) : (
-                        <div className="text-sm text-slate-400">无新增记忆</div>
+                        <div className="text-sm text-slate-400">No memories added</div>
                       )}
-                      <div className="text-xs text-slate-500 mt-2">共 {storageResult.total_memories} 条记忆</div>
+                      <div className="text-xs text-slate-500 mt-2">Total {storageResult.total_memories} memories</div>
                     </div>
                   </div>
                 )}
@@ -295,12 +458,12 @@ export function ChatDemo() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="输入消息..."
+                placeholder="Type message..."
                 rows={1}
                 className="w-full bg-neural-bg border border-neural-border rounded-xl px-4 py-3 pr-24 text-white placeholder-slate-500 resize-none focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 font-chinese"
               />
               <div className="absolute right-2 bottom-2 flex gap-2">
-                <button onClick={handleNewConversation} className="w-9 h-9 bg-neural-card hover:bg-neural-card-hover border border-neural-border rounded-lg flex items-center justify-center transition-colors" title="新对话">
+                <button onClick={handleNewConversation} className="w-9 h-9 bg-neural-card hover:bg-neural-card-hover border border-neural-border rounded-lg flex items-center justify-center transition-colors" title="New conversation">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M12 5v14M5 12h14" />
                   </svg>
@@ -313,7 +476,7 @@ export function ChatDemo() {
                 </button>
               </div>
             </div>
-            <p className="text-xs text-slate-500 mt-2 text-center">按 Enter 发送，Shift + Enter 换行</p>
+            <p className="text-xs text-slate-500 mt-2 text-center">Press Enter to send, Shift + Enter for new line</p>
         </footer>
       </div>
 
@@ -328,8 +491,8 @@ export function ChatDemo() {
                 <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" />
               </svg>
             </div>
-            <h3 className="text-white font-medium mb-2">Agent 事件流</h3>
-            <p className="text-sm text-slate-400">发送消息后，这里将实时展示Agent的工作过程<br/>包括工具调用、参数和返回结果</p>
+            <h3 className="text-white font-medium mb-2">Agent Event Flow</h3>
+            <p className="text-sm text-slate-400">After sending a message, the Agent workflow will be displayed here<br/>Including tool calls, parameters and results</p>
           </div>
         )}
       </div>

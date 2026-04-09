@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { StatCard } from '../StatsDashboard/StatCard';
 
 interface Config {
@@ -76,7 +76,11 @@ const PARAM_DESCRIPTIONS = [
   },
 ];
 
-export function Settings() {
+interface SettingsProps {
+  currentInstance?: string;
+}
+
+export function Settings({ currentInstance }: SettingsProps) {
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -217,7 +221,7 @@ export function Settings() {
   }
 
   return (
-    <div className="min-h-screen neural-grid">
+    <div className="h-full overflow-y-auto neural-grid">
       <header className="px-8 py-6 border-b border-neural-border">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -465,7 +469,7 @@ export function Settings() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="p-4 bg-neural-bg/50 rounded-lg">
                     <h3 className="text-sm font-medium text-cyan-400 mb-2">当前实例</h3>
-                    <p className="text-lg font-bold text-white">{monitorData.instance}</p>
+                    <p className="text-lg font-bold text-white">{currentInstance || monitorData.instance}</p>
                   </div>
                   <div className="p-4 bg-neural-bg/50 rounded-lg">
                     <h3 className="text-sm font-medium text-purple-400 mb-2">社区簇</h3>
@@ -473,12 +477,12 @@ export function Settings() {
                   </div>
                   <div className="p-4 bg-neural-bg/50 rounded-lg">
                     <h3 className="text-sm font-medium text-emerald-400 mb-2">偏好追踪</h3>
-                    <p className="text-lg font-bold text-white">{monitorData.preference.total_calls} 次调用</p>
+                    <p className="text-lg font-bold text-white">{Math.round(monitorData.preference.total_calls)} 次调用</p>
                     {Object.keys(monitorData.preference.keys || {}).length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {Object.entries(monitorData.preference.keys).slice(0, 5).map(([key, count]) => (
                           <span key={key} className="px-2 py-0.5 bg-emerald-500/15 text-emerald-400 rounded text-xs">
-                            {key}: {count as number}
+                            {key}: {Math.round(count as number)}
                           </span>
                         ))}
                       </div>

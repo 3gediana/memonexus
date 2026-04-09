@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 
-export type StreamEventType = 'reasoning' | 'content' | 'done' | 'error' | 'tool_call' | 'storage_result';
+export type StreamEventType = 'reasoning' | 'content' | 'done' | 'error' | 'tool_call' | 'storage_result' | 'tool_return' | 'agent_thinking' | 'agent_tool_call' | 'agent_result' | 'storage_progress' | 'heartbeat';
 
 export interface ReasoningEvent {
   type: 'reasoning';
@@ -16,6 +16,14 @@ export interface DoneEvent {
   type: 'done';
   content: string;
   has_recalled: boolean;
+  recall_blocks?: Array<{
+    fingerprint: string;
+    key: string;
+    tag: string;
+    memory: string;
+    created_at: string;
+    recall_count: number;
+  }>;
 }
 
 export interface ErrorEvent {
@@ -49,16 +57,46 @@ export interface ToolReturnEvent {
   result: string;
 }
 
-export type StreamEvent = ReasoningEvent | ContentEvent | DoneEvent | ErrorEvent | StorageResult | ToolCallEvent | ToolReturnEvent;
+export interface AgentThinkingEvent {
+  type: 'agent_thinking';
+  agent: string;
+  phase: string;
+}
+
+export interface AgentToolCallEvent {
+  type: 'agent_tool_call';
+  agent: string;
+  tool: string;
+  params: any;
+}
+
+export interface AgentResultEvent {
+  type: 'agent_result';
+  agent: string;
+  result: any;
+}
+
+export interface StorageProgressEvent {
+  type: 'storage_progress';
+  stage: string;
+  progress: any;
+}
+
+export type StreamEvent = ReasoningEvent | ContentEvent | DoneEvent | ErrorEvent | StorageResult | ToolCallEvent | ToolReturnEvent | AgentThinkingEvent | AgentToolCallEvent | AgentResultEvent | StorageProgressEvent;
 
 interface UseStreamConnectionOptions {
   onReasoning?: (delta: string) => void;
   onContent?: (delta: string) => void;
-  onDone?: (content: string, has_recalled: boolean) => void;
+  onDone?: (content: string, hasRecalled: boolean, recallBlocks?: any[]) => void;
   onError?: (message: string) => void;
   onStorageResult?: (result: StorageResult) => void;
   onToolCall?: (tool_name: string, params: any, tool_call_id: string, result?: string) => void;
   onToolReturn?: (tool_name: string, tool_call_id: string, result: string) => void;
+  onAgentThinking?: (agent: string, phase: string) => void;
+  onAgentToolCall?: (agent: string, tool: string, params: any) => void;
+  onAgentResult?: (agent: string, result: any) => void;
+  onStorageProgress?: (stage: string, progress: any) => void;
+  onHeartbeat?: () => void;
 }
 
 export function useStreamConnection(options: UseStreamConnectionOptions) {
@@ -126,7 +164,7 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
                     options.onContent?.((event as any).delta || (event as any).content);
                     break;
                   case 'done':
-                    options.onDone?.((event as any).content, (event as any).has_recalled);
+                    options.onDone?.((event as any).content, (event as any).has_recalled, (event as any).recall_blocks);
                     setIsStreaming(false);
                     break;
                   case 'error':
@@ -141,6 +179,23 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
                     break;
                   case 'tool_return':
                     options.onToolReturn?.((event as any).tool_name, (event as any).tool_call_id, (event as any).result);
+                    break;
+                  case 'agent_thinking':
+                    options.onAgentThinking?.((event as any).agent, (event as any).phase);
+                    break;
+                  case 'agent_tool_call':
+                    options.onAgentToolCall?.((event as any).agent, (event as any).tool, (event as any).params);
+                    break;
+                  case 'agent_result':
+                    options.onAgentResult?.((event as any).agent, (event as any).result);
+                    break;
+                  case 'storage_progress':
+                    options.onStorageProgress?.((event as any).stage, (event as any).progress);
+                    break;
+                  default:
+                    if ((event as any).type === 'heartbeat') {
+                      options.onHeartbeat?.();
+                    }
                     break;
                 }
               } catch {

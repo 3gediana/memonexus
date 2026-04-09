@@ -144,6 +144,11 @@ export function Header({ currentInstance, onInstanceSwitch, onNewInstance, curre
         body: JSON.stringify({ name: instance.id }),
       });
       if (res.ok) {
+        // Save current page before reload
+        const currentPage = localStorage.getItem('currentPage');
+        if (currentPage) {
+          sessionStorage.setItem('restorePage', currentPage);
+        }
         onInstanceSwitch?.(instance);
         setShowDropdown(false);
         window.location.reload();
@@ -159,7 +164,7 @@ export function Header({ currentInstance, onInstanceSwitch, onNewInstance, curre
   };
 
   return (
-    <header className="h-14 border-b border-neural-border bg-neural-card/80 backdrop-blur-lg px-4 flex items-center justify-between flex-shrink-0">
+    <header className="h-14 border-b border-neural-border bg-neural-card/80 backdrop-blur-lg px-4 flex items-center justify-between flex-shrink-0 relative z-50">
       {/* 左侧：Logo + 导航 */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
@@ -228,7 +233,7 @@ export function Header({ currentInstance, onInstanceSwitch, onNewInstance, curre
           </button>
 
           {showDropdown && (
-            <div className="absolute right-0 top-full mt-1 w-56 bg-neural-card border border-neural-border rounded-lg shadow-xl py-1 z-50">
+            <div className="absolute right-0 top-full mt-1 w-56 bg-neural-card border border-neural-border rounded-lg shadow-xl py-1 z-[100]">
               {loading && <div className="px-3 py-2 text-sm text-slate-400">切换中...</div>}
               {fetchError && !loading && (
                 <div className="px-3 py-2 text-sm text-amber-400">{fetchError}</div>

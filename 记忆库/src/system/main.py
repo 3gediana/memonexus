@@ -39,7 +39,7 @@ _system_prompt = """你是记忆助手，能够记住用户告诉你的事情，
 
 
 def handle_user_message(
-    message: str, turn_index: int, conversation_history: list = None
+    message: str, turn_index: int, conversation_history: list = None, event_bus=None
 ) -> dict:
     """
     处理用户消息的完整链路
@@ -163,6 +163,7 @@ def handle_user_message(
                             dialogue,
                             tool_params.get("data")
                             or tool_params.get("date_range", ""),
+                            event_bus=event_bus,
                         )
                 elif tool_name == "add_to_memory_space":
                     from src.tools.memory_space_tools import add_memory
@@ -183,6 +184,66 @@ def handle_user_message(
                     from src.tools.memory_space_tools import list_memories
 
                     tool_result = list_memories()
+                elif tool_name == "save_to_key":
+                    from src.system.storage_flow import _process_with_key_agent
+                    from src.tools.visibility_tools import get_visible_memories
+
+                    key = tool_params.get("key", "misc")
+                    content = tool_params.get("content", "")
+                    tag = tool_params.get(
+                        "tag", content[:20] if len(content) > 20 else content
+                    )
+
+                    if not content:
+                        tool_result = {"success": False, "error": "content is required"}
+                    else:
+                        existing_memories = get_visible_memories(key)
+                        result = _process_with_key_agent(
+                            key, content, tag, existing_memories, event_bus=event_bus
+                        )
+
+                        if result.get("success"):
+                            tool_result = {
+                                "success": True,
+                                "action": result.get("action"),
+                                "fingerprint": result.get("fingerprint"),
+                                "key": key,
+                            }
+                            logger.info(
+                                f"[save_to_key] 存储成功: key={key}, action={result.get('action')}"
+                            )
+                            if result.get("action") in ("added", "replaced"):
+                                from src.system.storage_flow import (
+                                    _process_cross_key_association,
+                                )
+
+                                try:
+                                    _process_cross_key_association(
+                                        result.get("fingerprint"),
+                                        content,
+                                        key,
+                                        event_bus=event_bus,
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        f"[save_to_key] AssociationAgent failed: {e}"
+                                    )
+                        else:
+                            tool_result = {
+                                "success": False,
+                                "error": result.get("error", "Unknown error"),
+                            }
+                elif tool_name == "report_hits":
+                    fps = (
+                        tool_params.get("fingerprints", [])
+                        if isinstance(tool_params, dict)
+                        else []
+                    )
+                    if fps:
+                        calibrator = get_calibrator()
+                        for fp in fps:
+                            calibrator.record_hit(fp, fp)
+                    tool_result = {"success": True, "content": "hits reported"}
                 else:
                     tool_result = {
                         "success": False,
@@ -343,12 +404,19 @@ def _submit_pending_hits(dialogue: DialogueAgent):
 
 
 def _analyze_hits_with_model(
-    dialogue: DialogueAgent, user_message: str, reply: str, conversation_history: list
+    dialogue: DialogueAgent,
+    user_message: str,
+    reply: str,
+    conversation_history: list,
+    event_bus=None,
 ) -> list[str]:
     """后台调用单独的模型分析回复引用了哪些记忆，返回命中的fingerprints列表"""
     recall_blocks = dialogue.get_recall_blocks()
     if not recall_blocks or not reply:
         return []
+
+    if event_bus:
+        event_bus.emit_thinking("HitAnalyzer", "analyzing_response")
 
     blocks_text = "\n".join(
         f"[{b.get('fingerprint', '')}] {b.get('memory', '')}" for b in recall_blocks
@@ -412,7 +480,7 @@ def _analyze_hits_with_model(
                 {"role": "user", "content": user_prompt},
             ],
             tools=tools,
-            provider="glm",
+            provider="deepseek",
         )
 
         fps = []
@@ -430,7 +498,7 @@ def _analyze_hits_with_model(
         return []
 
 
-RECALL_BATCH_SIZE = 10  # 每个KeyAgent负责的记忆数量（减小批次，加快单次响应）
+RECALL_BATCH_SIZE = 8  # 每个KeyAgent负责的记忆数量
 
 
 def _handle_recall_from_key(
@@ -440,6 +508,7 @@ def _handle_recall_from_key(
     message: str,
     dialogue: DialogueAgent,
     date_range: str = "",
+    event_bus=None,
 ) -> dict:
     """
     处理recall_from_key/recall_from_keys工具（支持多key并发）
@@ -455,11 +524,14 @@ def _handle_recall_from_key(
     # 先提交上次的命中统计
     _submit_pending_hits(dialogue)
 
+    # 如果有事件总线，发送RecallAgent开始事件
+    if event_bus:
+        event_bus.emit_thinking("RecallAgent", f"searching_keys: {', '.join(keys)}")
+
     # 如果传了date_range，优先从sub获取对话记录
     if date_range:
         from src.tools.sub_tools import query_sub_by_time
 
-        # 解析 date_range：支持 "2026-04-01至2026-04-03"、"2026-04-01 2026-04-03" 或单个日期
         if "至" in date_range:
             start_date, end_date = date_range.split("至", 1)
         elif " " in date_range:
@@ -472,6 +544,15 @@ def _handle_recall_from_key(
             sub_records = sub_result.get("items", [])
             if sub_records:
                 dialogue.record_recall_happened()
+                if event_bus:
+                    event_bus.emit_result(
+                        "RecallAgent",
+                        {
+                            "success": True,
+                            "count": len(sub_records),
+                            "source": "conversation_history",
+                        },
+                    )
                 return {
                     "success": True,
                     "content": f"找到{len(sub_records)}条{date_range}期间的对话记录",
@@ -485,6 +566,18 @@ def _handle_recall_from_key(
                     ],
                     "sub_records": sub_records,
                 }
+
+        dialogue.record_recall_happened()
+        if event_bus:
+            event_bus.emit_result(
+                "RecallAgent",
+                {"success": True, "count": 0, "source": "conversation_history"},
+            )
+        return {
+            "success": True,
+            "content": f"没有找到{date_range}期间的对话记录",
+            "recall_blocks": [],
+        }
 
     # 没有date_range，走key数据库召回链路
     tracker = get_preference_tracker()
@@ -514,7 +607,7 @@ def _handle_recall_from_key(
             return []
 
         existing_for_agent = [
-            {"fingerprint": m["fingerprint"], "tag": m["tag"]} for m in memories
+            {"fingerprint": m["fingerprint"], "memory": m["memory"]} for m in memories
         ]
 
         # 分批：每批30条
@@ -537,12 +630,12 @@ def _handle_recall_from_key(
 
 ## 输入
 - 召回方向：用户想找什么
-- 记忆列表：包含tag和指纹
+- 记忆列表：包含指纹和原文
 
 ## 输出
 调用get_relevant_memories工具，返回相关记忆的指纹列表。
 如果没有相关记忆，返回空数组。
-根据tag判断相关性。""",
+根据原文内容判断相关性。""",
                     },
                     {"role": "user", "content": agent_context},
                 ],
@@ -566,7 +659,7 @@ def _handle_recall_from_key(
                         },
                     }
                 ],
-                provider="glm",
+                provider="deepseek",
             )
             if response.choices[0].message.tool_calls:
                 args = json.loads(
@@ -585,9 +678,6 @@ def _handle_recall_from_key(
 
         return list(set(key_relevant_fps))
 
-    # 全局并发控制：所有key的所有batch共享并发池，最多同时3个请求
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     all_batches = []
     for key in keys:
         key_memories = get_memories_by_key_sorted(key, limit=agent_top_n)
@@ -597,63 +687,23 @@ def _handle_recall_from_key(
         if not memories:
             continue
         existing_for_agent = [
-            {"fingerprint": m["fingerprint"], "tag": m["tag"]} for m in memories
+            {"fingerprint": m["fingerprint"], "memory": m["memory"]} for m in memories
         ]
         batches = [
             existing_for_agent[i : i + RECALL_BATCH_SIZE]
             for i in range(0, len(existing_for_agent), RECALL_BATCH_SIZE)
         ]
-        for i, batch in enumerate(batches):
-            all_batches.append((key, i, batch))
+        for batch_idx, batch in enumerate(batches):
+            all_batches.append((key, batch_idx, batch))
 
-    def _key_agent_judge_batch_global(key, batch_idx, batch):
-        agent_context = f"召回方向：{query}\n该key({key})下的记忆（第{batch_idx + 1}批）：\n{json.dumps(batch, ensure_ascii=False)}"
-        response = chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""你是"{key}"分类的记忆检索Agent。
-根据用户的召回方向，从该分类下的记忆中判断哪些是相关的。
-调用get_relevant_memories工具，返回相关记忆的指纹列表。没有则返回空数组。""",
-                },
-                {"role": "user", "content": agent_context},
-            ],
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_relevant_memories",
-                        "description": "返回相关记忆的指纹列表",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "fingerprints": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "相关记忆的指纹列表",
-                                },
-                            },
-                            "required": ["fingerprints"],
-                        },
-                    },
-                }
-            ],
-            provider="glm",
-        )
-        if response.choices[0].message.tool_calls:
-            args = json.loads(
-                response.choices[0].message.tool_calls[0].function.arguments
-            )
-            return args.get("fingerprints", [])
-        return []
-
-    # 全局并发池：所有key的所有batch全部并行，不限数量
     with ThreadPoolExecutor(
         max_workers=len(all_batches) if all_batches else 1
     ) as executor:
         futures = {
-            executor.submit(_key_agent_judge_batch_global, key, i, batch): (key, i)
-            for key, i, batch in all_batches
+            executor.submit(
+                _key_agent_judge_batch_global, key, batch_idx, batch, query, event_bus
+            ): (key, batch_idx)
+            for key, batch_idx, batch in all_batches
         }
         for future in as_completed(futures):
             key, batch_idx = futures[future]
@@ -792,9 +842,10 @@ def _expand_and_build_recall_blocks(direct_fps: list, key: str, topk: int) -> tu
                     "index": index,
                     "key": m.get("key", key),
                     "tag": m.get("tag", ""),
-                    "time": m.get("created_at", ""),
+                    "created_at": m.get("created_at", ""),
                     "memory": m.get("memory", ""),
                     "fingerprint": fp,
+                    "recall_count": m.get("recall_count", 0),
                 }
             )
             index += 1
@@ -827,9 +878,10 @@ def _expand_and_build_recall_blocks(direct_fps: list, key: str, topk: int) -> tu
                     "index": index,
                     "key": m.get("key", key),
                     "tag": m.get("tag", ""),
-                    "time": m.get("created_at", ""),
+                    "created_at": m.get("created_at", ""),
                     "memory": m.get("memory", ""),
                     "fingerprint": fp,
+                    "recall_count": m.get("recall_count", 0),
                 }
             )
             index += 1
@@ -842,16 +894,20 @@ def _format_history(conversation_history: list) -> str:
     if not conversation_history:
         return ""
 
-    # Limit to last 20 messages
     limited = conversation_history[-20:]
 
     lines = []
     for msg in limited:
-        role = "用户" if msg["role"] == "user" else "助手"
-        lines.append(f"{role}：{msg['content']}")
+        role = msg.get("role", "")
+        content = msg.get("content") or ""
+        if role == "tool":
+            continue
+        if not content:
+            continue
+        role_text = "用户" if role == "user" else "助手"
+        lines.append(f"{role_text}：{content}")
 
     result = "\n".join(lines)
-    # Cap at 4000 characters
     if len(result) > 4000:
         result = result[:4000]
 
@@ -859,7 +915,7 @@ def _format_history(conversation_history: list) -> str:
 
 
 def handle_user_message_streaming(
-    message: str, turn_index: int, conversation_history: list = None
+    message: str, turn_index: int, conversation_history: list = None, event_bus=None
 ):
     """流式处理用户消息
 
@@ -879,7 +935,7 @@ def handle_user_message_streaming(
     try:
         append_to_session(message, turn_index)
 
-        dialogue = DialogueAgent(list_all_keys())
+        dialogue = DialogueAgent(list_all_keys(), event_bus=event_bus)
 
         recalled_keys = set()
         max_iterations = 8
@@ -889,11 +945,9 @@ def handle_user_message_streaming(
                 f"[Streaming] DialogueAgent 第 {iteration + 1}/{max_iterations} 轮"
             )
 
-            # 首次迭代传入 message 和完整对话历史，后续迭代不传（对话历史已在 dialogue 中）
             msg_to_send = message if iteration == 0 else None
             hist_to_send = conversation_history if iteration == 0 else None
 
-            # 流式调用 receive_message_streaming
             for event in dialogue.receive_message_streaming(msg_to_send, hist_to_send):
                 event_type = event.get("type")
 
@@ -918,29 +972,41 @@ def handle_user_message_streaming(
 
                     t = threading.Thread(
                         target=_analyze_hits_with_model,
-                        args=(dialogue, message, reply, conversation_history),
+                        args=(
+                            dialogue,
+                            message,
+                            reply,
+                            conversation_history,
+                            event_bus,
+                        ),
                     )
                     t.daemon = True
                     t.start()
 
                     _submit_pending_hits(dialogue)
                     has_recalled = dialogue.has_recalled()
+                    recall_blocks = dialogue.get_recall_blocks()
                     dialogue.reset_round_state()
                     yield {
                         "type": "done",
                         "content": reply,
                         "has_recalled": has_recalled,
+                        "recall_blocks": recall_blocks,
                     }
                     return
 
                 elif event_type == "tool_call":
-                    # 工具调用，执行工具后继续循环
                     tool_name = event["tool_name"]
                     tool_params = event["params"]
                     tool_call_id = event["tool_call_id"]
                     reasoning = event.get("reasoning", "")
 
                     logger.info(f"[Streaming] 执行工具: {tool_name}")
+
+                    if event_bus:
+                        event_bus.emit_tool_call(
+                            "DialogueAgent", tool_name, tool_params
+                        )
 
                     if tool_name.startswith("kb_"):
                         tool_result = execute_kb_tool(tool_name, tool_params)
@@ -978,6 +1044,7 @@ def handle_user_message_streaming(
                                 dialogue,
                                 tool_params.get("data")
                                 or tool_params.get("date_range", ""),
+                                event_bus=event_bus,
                             )
                     elif tool_name == "add_to_memory_space":
                         from src.tools.memory_space_tools import add_memory
@@ -997,15 +1064,83 @@ def handle_user_message_streaming(
                         from src.tools.memory_space_tools import list_memories
 
                         tool_result = list_memories()
+                    elif tool_name == "save_to_key":
+                        from src.system.storage_flow import _process_with_key_agent
+                        from src.tools.visibility_tools import get_visible_memories
+
+                        key = tool_params.get("key", "misc")
+                        content = tool_params.get("content", "")
+                        tag = tool_params.get(
+                            "tag", content[:20] if len(content) > 20 else content
+                        )
+
+                        if not content:
+                            tool_result = {
+                                "success": False,
+                                "error": "content is required",
+                            }
+                        else:
+                            existing_memories = get_visible_memories(key)
+                            result = _process_with_key_agent(
+                                key, content, tag, existing_memories, event_bus=event_bus
+                            )
+
+                            if result.get("success"):
+                                tool_result = {
+                                    "success": True,
+                                    "action": result.get("action"),
+                                    "fingerprint": result.get("fingerprint"),
+                                    "key": key,
+                                }
+                                logger.info(
+                                    f"[save_to_key] 存储成功: key={key}, action={result.get('action')}"
+                                )
+                                if result.get("action") in ("added", "replaced"):
+                                    from src.system.storage_flow import (
+                                        _process_cross_key_association,
+                                    )
+
+                                    try:
+                                        _process_cross_key_association(
+                                            result.get("fingerprint"),
+                                            content,
+                                            key,
+                                            event_bus=event_bus,
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            f"[save_to_key] AssociationAgent failed: {e}"
+                                        )
+                            else:
+                                tool_result = {
+                                    "success": False,
+                                    "error": result.get("error", "Unknown error"),
+                                }
                     elif tool_name == "report_hits":
-                        # report_hits 已由 dialogue.py 处理（添加到 pending_hits），
-                        # 此处返回成功，避免 unknown tool 错误
+                        fps = (
+                            tool_params.get("fingerprints", [])
+                            if isinstance(tool_params, dict)
+                            else []
+                        )
+                        if fps:
+                            calibrator = get_calibrator()
+                            for fp in fps:
+                                calibrator.record_hit(fp, fp)
                         tool_result = {"success": True, "content": "hits reported"}
                     else:
                         tool_result = {
                             "success": False,
                             "error": f"Unknown tool: {tool_name}",
                         }
+
+                    if event_bus:
+                        event_bus.emit_result(
+                            "DialogueAgent",
+                            {
+                                "tool": tool_name,
+                                "success": tool_result.get("success", False),
+                            },
+                        )
 
                     # 追加工具调用记录到对话历史
                     dialogue.conversation_history.append(
@@ -1063,3 +1198,70 @@ def handle_user_message_streaming(
     except Exception as e:
         logger.error(f"[Streaming] 消息处理失败: {e}\n{traceback.format_exc()}")
         yield {"type": "error", "message": str(e)}
+
+
+def _key_agent_judge_batch_global(
+    key: str, batch_idx: int, batch: list, query: str, ev_bus
+):
+    """全局函数：对单个key的单个batch执行KeyAgent判断（用于并发池）"""
+    agent_context = f"召回方向：{query}\n该key({key})下的记忆（第{batch_idx + 1}批）：\n{json.dumps(batch, ensure_ascii=False)}"
+
+    if ev_bus:
+        ev_bus.emit_thinking("KeyAgent", f"judging key={key} batch={batch_idx + 1}")
+
+    response = chat_completion(
+        messages=[
+            {
+                "role": "system",
+                "content": f"""你是"{key}"分类的记忆检索Agent。
+根据用户的召回方向，从该分类下的记忆中判断哪些是相关的。
+
+## 输入
+- 召回方向：用户想找什么
+- 记忆列表：包含指纹和原文
+
+## 输出
+调用get_relevant_memories工具，返回相关记忆的指纹列表。
+如果没有相关记忆，返回空数组。
+根据原文内容判断相关性。""",
+            },
+            {"role": "user", "content": agent_context},
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_relevant_memories",
+                    "description": "返回相关记忆的指纹列表",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "fingerprints": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "相关记忆的指纹列表",
+                            },
+                        },
+                        "required": ["fingerprints"],
+                    },
+                },
+            }
+        ],
+        provider="deepseek",
+    )
+    fps = []
+    if response.choices[0].message.tool_calls:
+        try:
+            args = json.loads(
+                response.choices[0].message.tool_calls[0].function.arguments
+            )
+            fps = args.get("fingerprints", [])
+        except Exception as e:
+            logger.error(f"KeyAgent {key} batch {batch_idx} parse error: {e}")
+
+    if ev_bus and fps:
+        ev_bus.emit_result(
+            "KeyAgent", {"key": key, "batch": batch_idx + 1, "found": len(fps)}
+        )
+
+    return fps

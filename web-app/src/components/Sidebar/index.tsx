@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { eventBus } from '../../utils/EventBus';
-import { MEMORY_ADDED, MEMORY_GRAPH_UPDATED } from '../../constants/events';
+import { MEMORY_GRAPH_UPDATED } from '../../constants/events';
 
 type Page = 'chat' | 'stats' | 'memory' | 'knowledge' | 'graph' | 'agent' | 'settings' | 'sub';
 

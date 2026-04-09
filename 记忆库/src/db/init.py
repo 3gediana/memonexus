@@ -39,9 +39,13 @@ def init_database(db_path: str = None) -> dict:
                 base_score REAL DEFAULT 0.5,
                 recall_count INTEGER DEFAULT 0,
                 value_score REAL DEFAULT 0.5,
-                semantic_status TEXT DEFAULT 'valid'
+                semantic_status TEXT DEFAULT 'valid',
+                weight REAL DEFAULT 0.5,
+                last_recall_at INTEGER
             )
         """)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_key ON memory(key)")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS edges (
@@ -121,6 +125,8 @@ def _migrate_memory_columns(conn):
         ("recall_count", "INTEGER DEFAULT 0"),
         ("value_score", "REAL DEFAULT 0.5"),
         ("semantic_status", "TEXT DEFAULT 'valid'"),
+        ("weight", "REAL DEFAULT 0.5"),
+        ("last_recall_at", "INTEGER"),
     ]
 
     for col_name, col_def in migrations:

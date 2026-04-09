@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { getKeyColor } from '../../mock/memoryGraph';
 
 interface SubRecord {
   id: number;
@@ -87,18 +88,6 @@ export function Sub() {
     });
   };
 
-  const getKeyColor = (key: string) => {
-    const colors: Record<string, string> = {
-      study: '#22d3ee',
-      health: '#4ade80',
-      emotion: '#f472b6',
-      relationship: '#fb923c',
-      preference: '#a855f7',
-      schedule: '#facc15',
-    };
-    return colors[key] || '#94a3b8';
-  };
-
   if (loading && offset === 0) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -108,7 +97,7 @@ export function Sub() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="h-full overflow-y-auto p-6 space-y-6">
       <div className="bg-neural-card/80 border border-neural-border rounded-xl p-4">
         <div className="flex items-center justify-between">
           <div>

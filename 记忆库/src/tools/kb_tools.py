@@ -94,10 +94,10 @@ KB_TOOLS = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "搜索查询文本"},
-                    "summaryInstruction": {"type": "string", "description": "总结指令"},
+                    "summaryInstruction": {"type": "string", "description": "总结指令", "default": "请简要概括这段内容"},
                     "topK": {"type": "integer", "description": "返回结果数量，默认10"},
                 },
-                "required": ["query", "summaryInstruction"],
+                "required": ["query"],
             },
         },
     },

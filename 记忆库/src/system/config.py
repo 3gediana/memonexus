@@ -27,8 +27,11 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
+    global _config_cache, _config_mtime
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    _config_cache = None
+    _config_mtime = 0
 
 
 def get_current_instance_config() -> dict:

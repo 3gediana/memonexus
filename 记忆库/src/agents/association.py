@@ -103,7 +103,9 @@ class AssociationAgent:
 → 调用：create_edges([])
 """
 
-    def process(self, main_memory: dict, candidates: list) -> list[dict]:
+    def process(
+        self, main_memory: dict, candidates: list, event_bus=None
+    ) -> list[dict]:
         context = f"主记忆：{json.dumps(main_memory, ensure_ascii=False)}\n候选记忆：{json.dumps(candidates, ensure_ascii=False)}"
 
         # 只给 create_edges 工具，防止模型调用 get_memory_by_fingerprint
@@ -118,6 +120,9 @@ class AssociationAgent:
                         "candidates_count": len(candidates),
                     },
                 )
+
+            if event_bus:
+                event_bus.emit_thinking("AssociationAgent", "judging_associations")
 
             messages = [
                 {"role": "system", "content": self.system_prompt},
@@ -137,4 +142,5 @@ class AssociationAgent:
                 return args.get("edges", [])
             return []
 
-        return call_with_retry(_call)
+        result = call_with_retry(_call)
+        return result

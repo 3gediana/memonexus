@@ -14,9 +14,11 @@ interface TopMemoryListProps {
 }
 
 export function TopMemoryList({ data }: TopMemoryListProps) {
+  const sorted = [...data].sort((a, b) => b.value_score - a.value_score).slice(0, 5);
+
   return (
     <div className="space-y-3">
-      {data.map((item, index) => {
+      {sorted.map((item, index) => {
         const color = getKeyColor(item.key);
         return (
           <div

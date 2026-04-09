@@ -60,7 +60,7 @@ export function MemoryGraph() {
         const linksData = await linksRes.json();
         const keysData = await keysRes.json();
 
-        const rawNodes = nodesData.data || [];
+        const rawNodes = nodesData.data?.nodes || nodesData.data || [];
         const adaptedNodes = rawNodes.map((n: any) => ({
           id: n.fingerprint || n.id,
           key: n.key,
@@ -70,7 +70,7 @@ export function MemoryGraph() {
           recall_count: n.recall_count ?? 0,
         }));
 
-        const rawLinks = (linksData.data || []).map((l: any) => ({
+        const rawLinks = (linksData.data?.edges || linksData.data || []).map((l: any) => ({
           source: l.source || l.from_fingerprint,
           target: l.target || l.to_fingerprint,
           strength: l.strength ?? 0.5,
@@ -114,7 +114,6 @@ export function MemoryGraph() {
   );
 
   const filteredData = useMemo(() => {
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
     const filteredNodes = nodes.filter(n => activeKeys.has(n.key));
     const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
 

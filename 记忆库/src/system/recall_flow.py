@@ -3,6 +3,7 @@ import json
 from src.tools.recall_tools import dispatch_recall_to_keys, request_memory_recall
 from src.tools.query_tools import get_memory_by_fingerprint as get_memory_by_fp_list
 from src.tools.weight_tools import calculate_dynamic_k, get_connectivity_factor
+from src.tools.value_assessor import get_value_assessor
 from src.system.retry import call_with_retry
 from src.system.config import load_config
 from src.system.freeze import FreezeManager
@@ -14,6 +15,7 @@ class RecallManager:
         self.freeze_manager = FreezeManager()
         config = load_config()
         self.timeout_seconds = config.get("freeze_timeout_seconds", 15)
+        self.recalled_fingerprints = []  # 用于跟踪召回的fingerprints
 
     def execute_recall(self, request: dict) -> dict:
         """执行召回，支持超时回滚"""
@@ -108,6 +110,13 @@ class RecallManager:
             # 失败/超时：回滚
             self._rollback()
             return {"success": False, "error": str(e), "can_retry": True}
+        finally:
+            # 更新recall_count
+            if self.recalled_fingerprints:
+                assessor = get_value_assessor()
+                for fp in self.recalled_fingerprints:
+                    if fp:
+                        assessor.increment_recall_count(fp)
 
     def _get_current_context(self) -> dict:
         """获取当前上下文快照（模拟）"""
@@ -117,6 +126,7 @@ class RecallManager:
         """处理dispatch结果，解析fingerprint为memory原文，使用动态topk"""
         recall_blocks = []
         index = 1
+        self.recalled_fingerprints = []  # 清空并重新收集
 
         for item in items:
             key = item.get("key", "")
@@ -132,8 +142,10 @@ class RecallManager:
             for fp_data in main_fp_list:
                 fp = fp_data["fingerprint"]
                 all_fps.add(fp)
+                self.recalled_fingerprints.append(fp)
                 for associated in associated_fps_map.get(fp, []):
                     all_fps.add(associated["fingerprint"])
+                    self.recalled_fingerprints.append(associated["fingerprint"])
 
             if not all_fps:
                 continue

@@ -62,3 +62,18 @@ def list_sub(limit: int = 50, offset: int = 0) -> dict:
         return {"success": True, "items": items}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def delete_sub(sub_id: int) -> dict:
+    """删除指定的sub记录"""
+    conn = None
+    try:
+        conn = get_sub_db()
+        conn.execute("DELETE FROM sub WHERE id = ?", (sub_id,))
+        conn.commit()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()

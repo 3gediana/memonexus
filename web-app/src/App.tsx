@@ -17,8 +17,18 @@ interface Instance {
 }
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('chat');
+  const [currentPage, setCurrentPage] = useState<Page>(() => {
+    // Restore page from sessionStorage on initial load
+    const saved = sessionStorage.getItem('restorePage') || localStorage.getItem('currentPage');
+    sessionStorage.removeItem('restorePage');
+    return (saved as Page) || 'chat';
+  });
   const [currentInstance, setCurrentInstance] = useState<Instance | null>(null);
+
+  // Save current page to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('currentPage', currentPage);
+  }, [currentPage]);
 
   useEffect(() => {
     fetch('/api/instances/current')
@@ -50,7 +60,6 @@ function App() {
         body: JSON.stringify({ name }),
       });
       if (res.ok) {
-        const data = await res.json();
         window.location.reload();
       }
     } catch (error) {
@@ -77,7 +86,7 @@ function App() {
         {currentPage === 'knowledge' && <KnowledgeBase />}
         {currentPage === 'graph' && <MemoryGraph />}
         {currentPage === 'agent' && <AgentFlow />}
-        {currentPage === 'settings' && <Settings />}
+        {currentPage === 'settings' && <Settings currentInstance={currentInstance?.name} />}
         {currentPage === 'sub' && <Sub />}
       </main>
     </div>
