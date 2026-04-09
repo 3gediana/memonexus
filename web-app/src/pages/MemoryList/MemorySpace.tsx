@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import DOMPurify from 'dompurify';
 
 interface MemorySpaceItem {
   id: number;
@@ -164,7 +165,7 @@ export function MemorySpace() {
                 <div>
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      <p className="text-slate-200 font-chinese leading-relaxed">{item.content}</p>
+                      <p className="text-slate-200 font-chinese leading-relaxed">{DOMPurify.sanitize(item.content, { ALLOWED_TAGS: [] })}</p>
                       <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
                         <span>#{item.id}</span>
                         <span>来源: {item.source}</span>

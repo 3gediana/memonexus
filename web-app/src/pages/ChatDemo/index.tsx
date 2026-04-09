@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import DOMPurify from 'dompurify';
 import { ChatMessage } from './ChatMessage';
 import { AgentEventLog } from './AgentEventLog';
 import { useStreamConnection, type StorageResult } from '../../hooks/useStreamConnection';
@@ -438,7 +439,7 @@ export function ChatDemo() {
 
             {messages.map((msg, index) => (
               <div key={msg.id}>
-                <ChatMessage role={msg.role} content={msg.content} reasoning={msg.reasoning} recall_blocks={msg.recall_blocks} />
+                <ChatMessage role={msg.role} content={DOMPurify.sanitize(msg.content, { ALLOWED_TAGS: [] })} reasoning={msg.reasoning} recall_blocks={msg.recall_blocks} />
                 {msg.role === 'assistant' && storageResult && index === messages.length - 1 && (
                   <div className="mt-3 ml-4 pl-4 border-l-2 border-emerald-500/50">
                     <div className="flex items-center gap-2 text-xs text-emerald-400 mb-2">

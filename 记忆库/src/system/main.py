@@ -165,25 +165,6 @@ def handle_user_message(
                             or tool_params.get("date_range", ""),
                             event_bus=event_bus,
                         )
-                elif tool_name == "add_to_memory_space":
-                    from src.tools.memory_space_tools import add_memory
-
-                    tool_result = add_memory(tool_params.get("content", ""))
-                elif tool_name == "remove_from_memory_space":
-                    from src.tools.memory_space_tools import remove_memory
-
-                    tool_result = remove_memory(tool_params.get("memory_id"))
-                elif tool_name == "update_memory_space":
-                    from src.tools.memory_space_tools import update_memory
-
-                    tool_result = update_memory(
-                        tool_params.get("memory_id"),
-                        tool_params.get("content", ""),
-                    )
-                elif tool_name == "list_memory_space":
-                    from src.tools.memory_space_tools import list_memories
-
-                    tool_result = list_memories()
                 elif tool_name == "save_to_key":
                     from src.system.storage_flow import _process_with_key_agent
                     from src.tools.visibility_tools import get_visible_memories
@@ -781,6 +762,16 @@ def _handle_recall_from_key(
     if recall_blocks:
         dialogue.set_recall_blocks(recall_blocks)
 
+    if event_bus:
+        event_bus.emit_result(
+            "RecallAgent",
+            {
+                "success": True,
+                "count": len(recall_blocks),
+                "source": "key_database",
+            },
+        )
+
     return {
         "success": True,
         "recall_blocks": recall_blocks,
@@ -1022,6 +1013,14 @@ def handle_user_message_streaming(
                             )
                     elif tool_name == "get_key_summaries":
                         tool_result = _handle_get_key_summaries()
+                        if event_bus:
+                            event_bus.emit_result(
+                                "RecallAgent",
+                                {
+                                    "success": tool_result.get("success", False),
+                                    "key_summaries_count": len(tool_result.get("key_summaries", {})),
+                                },
+                            )
                     elif tool_name in ("recall_from_key", "recall_from_keys"):
                         keys_param = tool_params.get("keys")
                         key_param = tool_params.get("key", "")
@@ -1056,24 +1055,6 @@ def handle_user_message_streaming(
                                 or tool_params.get("date_range", ""),
                                 event_bus=event_bus,
                             )
-                    elif tool_name == "add_to_memory_space":
-                        from src.tools.memory_space_tools import add_memory
-
-                        tool_result = add_memory(tool_params.get("content", ""))
-                    elif tool_name == "remove_from_memory_space":
-                        from src.tools.memory_space_tools import remove_memory
-
-                        tool_result = remove_memory(tool_params.get("memory_id"))
-                    elif tool_name == "update_memory_space":
-                        from src.tools.memory_space_tools import update_memory
-
-                        tool_result = update_memory(
-                            tool_params.get("memory_id"), tool_params.get("content", "")
-                        )
-                    elif tool_name == "list_memory_space":
-                        from src.tools.memory_space_tools import list_memories
-
-                        tool_result = list_memories()
                     elif tool_name == "save_to_key":
                         from src.system.storage_flow import _process_with_key_agent
                         from src.tools.visibility_tools import get_visible_memories
@@ -1287,7 +1268,7 @@ def _key_agent_judge_batch_global(
 
     if ev_bus and fps:
         ev_bus.emit_result(
-            "KeyAgent", {"key": key, "batch": batch_idx + 1, "found": len(fps)}
+            "KeyAgent", {"key": key, "batch": batch_idx + 1, "success": len(fps)}
         )
 
     return fps

@@ -505,118 +505,121 @@ async def chat_stream(instance_id: str, req: ChatRequest):
         except asyncio.CancelledError:
             logger.info("[SSE] Client disconnected, cleaning up...")
         finally:
-            # ========== 流结束：解冻 + 45s计时器 + 存储 ==========
-            logger.info("[SSE] running cleanup (unfreeze + heartbeat stop)")
-            event_bus.stop_heartbeat()
+            try:
+                # ========== 流结束：解冻 + 45s计时器 + 存储 ==========
+                logger.info("[SSE] running cleanup (unfreeze + heartbeat stop)")
+                event_bus.stop_heartbeat()
 
-            # 检查冻结是否超时（45s静息后自动触发report_hits）
-            if freeze_manager.check_timeout():
-                logger.info("[SSE] freeze timed out, triggering report_hits")
-                from src.tools.edge_calibrator import get_calibrator
-                from src.tools.memory_tools import get_db
+                # 检查冻结是否超时（45s静息后自动触发report_hits）
+                if freeze_manager.check_timeout():
+                    logger.info("[SSE] freeze timed out, triggering report_hits")
+                    from src.tools.edge_calibrator import get_calibrator
+                    from src.tools.memory_tools import get_db
 
-                calibrator = get_calibrator()
-                # 对所有边记录hit（简化版：扫描最近创建的边）
-                conn = get_db()
-                try:
-                    recent_edges = conn.execute(
-                        "SELECT from_fingerprint, to_fingerprint FROM edges ORDER BY created_at DESC LIMIT 100"
-                    ).fetchall()
-                    for edge in recent_edges:
-                        calibrator.record_hit(
-                            edge["from_fingerprint"], edge["to_fingerprint"]
-                        )
-                finally:
-                    conn.close()
-                # 冻结超时视为新会话开始，解冻并清空队列（不存储中间态）
-                freeze_manager.unfreeze()
-                freeze_manager.clear_queue()
-            else:
-                # 正常解冻，取出队列中积累的消息并存储
-                unfreeze_result = freeze_manager.unfreeze()
-                queue_messages = unfreeze_result.get("queue_messages", [])
-                if queue_messages:
+                    calibrator = get_calibrator()
+                    # 对所有边记录hit（简化版：扫描最近创建的边）
+                    conn = get_db()
                     try:
-                        from src.system.storage_flow import process_user_message
-
-                        total_added = []
-                        for idx, msg in enumerate(queue_messages):
-                            result = process_user_message(
-                                msg, idx + 1, event_bus=event_bus
+                        recent_edges = conn.execute(
+                            "SELECT from_fingerprint, to_fingerprint FROM edges ORDER BY created_at DESC LIMIT 100"
+                        ).fetchall()
+                        for edge in recent_edges:
+                            calibrator.record_hit(
+                                edge["from_fingerprint"], edge["to_fingerprint"]
                             )
-                            if result.get("success") and result.get("memories_added"):
-                                total_added.extend(result["memories_added"])
-                        if total_added:
-                            import time as time_module
-
-                            start_time = time_module.time()
-                            transformed = []
-                            for m in total_added:
-                                memory = m.get("memory", "")
-                                transformed.append(
-                                    {
-                                        "memory_id": m.get("fingerprint", ""),
-                                        "key": m.get("key", ""),
-                                        "content_preview": memory[:100]
-                                        + ("..." if len(memory) > 100 else ""),
-                                    }
-                                )
-                            duration_ms = int((time_module.time() - start_time) * 1000)
-                            yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': transformed, 'total_memories': len(transformed), 'duration_ms': duration_ms}, ensure_ascii=False)}\n\n"
-                        logger.info(
-                            f"[SSE] stored {len(queue_messages)} queued messages"
-                        )
-                    except Exception as e:
-                        logger.error(f"[SSE] queued storage failed: {e}")
-
-            # 保存对话到数据库
-            if final_content:
-                from src.system.config import get_current_instance_config
-
-                instance_cfg = get_current_instance_config()
-                db_path = instance_cfg.get("db_path")
-                if db_path:
-                    try:
-                        conn = sqlite3.connect(db_path)
-                        cur = conn.cursor()
-                        cur.execute("""
-                            CREATE TABLE IF NOT EXISTS dialogue_history (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                user_message TEXT NOT NULL,
-                                assistant_message TEXT NOT NULL,
-                                turn INTEGER NOT NULL,
-                                created_at TEXT NOT NULL
-                            )
-                        """)
-                        cur.execute(
-                            "INSERT INTO dialogue_history (user_message, assistant_message, turn, created_at) VALUES (?, ?, ?, ?)",
-                            (
-                                req.message,
-                                final_content,
-                                turn,
-                                __import__("datetime").datetime.now().isoformat(),
-                            ),
-                        )
-                        conn.commit()
+                    finally:
                         conn.close()
-                        logger.info(f"[SSE] dialogue saved: turn={turn}")
-                    except Exception as e:
-                        logger.error(f"[SSE] dialogue save failed: {e}")
+                    # 冻结超时视为新会话开始，解冻并清空队列（不存储中间态）
+                    freeze_manager.unfreeze()
+                    freeze_manager.clear_queue()
+                else:
+                    # 正常解冻，取出队列中积累的消息并存储
+                    unfreeze_result = freeze_manager.unfreeze()
+                    queue_messages = unfreeze_result.get("queue_messages", [])
+                    if queue_messages:
+                        try:
+                            from src.system.storage_flow import process_user_message
 
-            # 流结束后追加到 dialogue_messages（保持上下文）
-            if final_content:
-                response_message = {
-                    "turn": turn,
-                    "user_message": req.message,
-                    "assistant_message": final_content,
-                    "has_recalled": final_has_recalled,
-                }
-                dialogue_messages.append(response_message)
-                logger.info(f"[SSE] dialogue appended to memory: turn={turn}")
+                            total_added = []
+                            for idx, msg in enumerate(queue_messages):
+                                result = process_user_message(
+                                    msg, idx + 1, event_bus=event_bus
+                                )
+                                if result.get("success") and result.get("memories_added"):
+                                    total_added.extend(result["memories_added"])
+                            if total_added:
+                                import time as time_module
 
-            if final_has_recalled:
-                recall_timer.start_if_recalled(True, [])
-                logger.info("[SSE] 45s recall timer started")
+                                start_time = time_module.time()
+                                transformed = []
+                                for m in total_added:
+                                    memory = m.get("memory", "")
+                                    transformed.append(
+                                        {
+                                            "memory_id": m.get("fingerprint", ""),
+                                            "key": m.get("key", ""),
+                                            "content_preview": memory[:100]
+                                            + ("..." if len(memory) > 100 else ""),
+                                        }
+                                    )
+                                duration_ms = int((time_module.time() - start_time) * 1000)
+                                yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': transformed, 'total_memories': len(transformed), 'duration_ms': duration_ms}, ensure_ascii=False)}\n\n"
+                            logger.info(
+                                f"[SSE] stored {len(queue_messages)} queued messages"
+                            )
+                        except Exception as e:
+                            logger.error(f"[SSE] queued storage failed: {e}")
+
+                # 保存对话到数据库
+                if final_content:
+                    from src.system.config import get_current_instance_config
+
+                    instance_cfg = get_current_instance_config()
+                    db_path = instance_cfg.get("db_path")
+                    if db_path:
+                        try:
+                            conn = sqlite3.connect(db_path)
+                            cur = conn.cursor()
+                            cur.execute("""
+                                CREATE TABLE IF NOT EXISTS dialogue_history (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    user_message TEXT NOT NULL,
+                                    assistant_message TEXT NOT NULL,
+                                    turn INTEGER NOT NULL,
+                                    created_at TEXT NOT NULL
+                                )
+                            """)
+                            cur.execute(
+                                "INSERT INTO dialogue_history (user_message, assistant_message, turn, created_at) VALUES (?, ?, ?, ?)",
+                                (
+                                    req.message,
+                                    final_content,
+                                    turn,
+                                    __import__("datetime").datetime.now().isoformat(),
+                                ),
+                            )
+                            conn.commit()
+                            conn.close()
+                            logger.info(f"[SSE] dialogue saved: turn={turn}")
+                        except Exception as e:
+                            logger.error(f"[SSE] dialogue save failed: {e}")
+
+                # 流结束后追加到 dialogue_messages（保持上下文）
+                if final_content:
+                    response_message = {
+                        "turn": turn,
+                        "user_message": req.message,
+                        "assistant_message": final_content,
+                        "has_recalled": final_has_recalled,
+                    }
+                    dialogue_messages.append(response_message)
+                    logger.info(f"[SSE] dialogue appended to memory: turn={turn}")
+
+                if final_has_recalled:
+                    recall_timer.start_if_recalled(True, [])
+                    logger.info("[SSE] 45s recall timer started")
+            except Exception as e:
+                logger.error(f"[SSE] cleanup error: {e}")
 
     return StreamingResponse(
         event_generator(),
@@ -1266,7 +1269,10 @@ async def monitor_stream():
                     yield f": heartbeat {heartbeat_count}\n\n"
 
         finally:
-            broadcaster.unregister(q)
+            try:
+                broadcaster.unregister(q)
+            except Exception as e:
+                logger.error(f"[monitor_stream] unregister error: {e}")
 
     return StreamingResponse(
         event_generator(),

@@ -4,7 +4,6 @@
 """
 
 import asyncio
-from src.system.event_broadcaster import EventBroadcaster
 from src.system.logger import get_module_logger
 
 logger = get_module_logger("event_bus")
@@ -36,7 +35,6 @@ class AgentEventBus:
             "phase": phase,
         }
         self._queue.put_nowait(event)
-        EventBroadcaster.get_instance().broadcast(event)
         logger.debug(f"[EventBus] emit_thinking: {agent} - {phase}")
 
     def emit_tool_call(self, agent: str, tool: str, params: dict):
@@ -50,7 +48,6 @@ class AgentEventBus:
             "params": params,
         }
         self._queue.put_nowait(event)
-        EventBroadcaster.get_instance().broadcast(event)
         logger.debug(f"[EventBus] emit_tool_call: {agent} - {tool}")
 
     def emit_result(self, agent: str, result: dict):
@@ -63,7 +60,6 @@ class AgentEventBus:
             "result": result,
         }
         self._queue.put_nowait(event)
-        EventBroadcaster.get_instance().broadcast(event)
         logger.debug(f"[EventBus] emit_result: {agent}")
 
     def emit_storage_progress(self, stage: str, progress: dict):
@@ -76,7 +72,6 @@ class AgentEventBus:
             "progress": progress,
         }
         self._queue.put_nowait(event)
-        EventBroadcaster.get_instance().broadcast(event)
         logger.debug(f"[EventBus] emit_storage_progress: {stage}")
 
     async def _heartbeat_loop(self):

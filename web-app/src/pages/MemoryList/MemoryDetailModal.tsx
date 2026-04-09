@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { getKeyColor } from '../../mock/statsDashboard';
 import type { Memory } from '../../mock/memoryList';
 
@@ -67,7 +68,7 @@ export function MemoryDetailModal({ memory, onClose }: MemoryDetailModalProps) {
           <div>
             <h3 className="text-sm font-medium text-slate-400 mb-2">记忆内容</h3>
             <p className="text-slate-200 font-chinese leading-relaxed">
-              {memory.memory}
+              {DOMPurify.sanitize(memory.memory, { ALLOWED_TAGS: [] })}
             </p>
           </div>
 

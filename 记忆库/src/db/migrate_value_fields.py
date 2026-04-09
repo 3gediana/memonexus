@@ -4,6 +4,7 @@
 
 import sqlite3
 from src.db.init import get_current_db_paths
+from src.db.schema import MEMORY_COLUMNS_MIGRATION
 
 
 def migrate_value_fields() -> dict:
@@ -17,27 +18,18 @@ def migrate_value_fields() -> dict:
         cursor.execute("PRAGMA table_info(memory)")
         memory_columns = [col[1] for col in cursor.fetchall()]
 
-        if "recall_count" not in memory_columns:
-            cursor.execute(
-                "ALTER TABLE memory ADD COLUMN recall_count INTEGER DEFAULT 0"
-            )
-            print("Added column: memory.recall_count")
+        # 定义需要添加的列
+        value_columns = [
+            "recall_count",
+            "hit_count",
+            "direct_recall_count",
+            "total_recall_count",
+        ]
 
-        if "hit_count" not in memory_columns:
-            cursor.execute("ALTER TABLE memory ADD COLUMN hit_count INTEGER DEFAULT 0")
-            print("Added column: memory.hit_count")
-
-        if "direct_recall_count" not in memory_columns:
-            cursor.execute(
-                "ALTER TABLE memory ADD COLUMN direct_recall_count INTEGER DEFAULT 0"
-            )
-            print("Added column: memory.direct_recall_count")
-
-        if "total_recall_count" not in memory_columns:
-            cursor.execute(
-                "ALTER TABLE memory ADD COLUMN total_recall_count INTEGER DEFAULT 0"
-            )
-            print("Added column: memory.total_recall_count")
+        for col_name, col_def in MEMORY_COLUMNS_MIGRATION:
+            if col_name in value_columns and col_name not in memory_columns:
+                cursor.execute(f"ALTER TABLE memory ADD COLUMN {col_name} {col_def}")
+                print(f"Added column: memory.{col_name}")
 
         conn.commit()
         conn.close()

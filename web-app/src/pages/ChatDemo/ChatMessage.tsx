@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import DOMPurify from 'dompurify';
 import { getKeyColor } from '../../mock/chatDemo';
 import type { RecallBlock, StorageResult } from '../../mock/chatDemo';
 
@@ -37,7 +38,7 @@ export function ChatMessage({ role, content, reasoning, recall_blocks, storage_r
             </button>
             {reasoningOpen && (
               <div className="mt-1 bg-neural-card/50 border border-neural-border/50 rounded-lg px-3 py-2 text-xs text-slate-400 font-chinese leading-relaxed whitespace-pre-wrap">
-                {reasoning}
+                {DOMPurify.sanitize(reasoning, { ALLOWED_TAGS: [] })}
               </div>
             )}
           </div>

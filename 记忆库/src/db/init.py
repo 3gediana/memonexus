@@ -1,6 +1,7 @@
 import sqlite3
 import os
 from src.system.config import load_config, get_current_instance_config
+from src.db.schema import MEMORY_COLUMNS_MIGRATION
 
 
 def get_db(db_path: str) -> sqlite3.Connection:
@@ -39,9 +40,12 @@ def init_database(db_path: str = None) -> dict:
                 base_score REAL DEFAULT 0.5,
                 recall_count INTEGER DEFAULT 0,
                 value_score REAL DEFAULT 0.5,
-                semantic_status TEXT DEFAULT 'valid',
+                semantic_status TEXT DEFAULT 'valid' CHECK (semantic_status IN ('valid', 'completed', 'expired')),
                 weight REAL DEFAULT 0.5,
-                last_recall_at INTEGER
+                last_recall_at INTEGER,
+                hit_count INTEGER DEFAULT 0,
+                direct_recall_count INTEGER DEFAULT 0,
+                total_recall_count INTEGER DEFAULT 0
             )
         """)
 
@@ -51,7 +55,7 @@ def init_database(db_path: str = None) -> dict:
             CREATE TABLE IF NOT EXISTS edges (
                 from_fingerprint TEXT NOT NULL,
                 to_fingerprint TEXT NOT NULL,
-                strength REAL NOT NULL,
+                strength REAL NOT NULL CHECK (strength IN (0.9, 0.6, 0.3)),
                 reason TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -59,8 +63,8 @@ def init_database(db_path: str = None) -> dict:
                 hit_count INTEGER DEFAULT 0,
                 effective_strength REAL DEFAULT 0.5,
                 PRIMARY KEY (from_fingerprint, to_fingerprint),
-                FOREIGN KEY (from_fingerprint) REFERENCES memory(fingerprint),
-                FOREIGN KEY (to_fingerprint) REFERENCES memory(fingerprint)
+                FOREIGN KEY (from_fingerprint) REFERENCES memory(fingerprint) ON DELETE CASCADE,
+                FOREIGN KEY (to_fingerprint) REFERENCES memory(fingerprint) ON DELETE CASCADE
             )
         """)
 
@@ -85,8 +89,8 @@ def init_database(db_path: str = None) -> dict:
                 fingerprint TEXT NOT NULL,
                 added_at TEXT NOT NULL,
                 PRIMARY KEY (cluster_id, fingerprint),
-                FOREIGN KEY (cluster_id) REFERENCES memory_clusters(cluster_id),
-                FOREIGN KEY (fingerprint) REFERENCES memory(fingerprint)
+                FOREIGN KEY (cluster_id) REFERENCES memory_clusters(cluster_id) ON DELETE CASCADE,
+                FOREIGN KEY (fingerprint) REFERENCES memory(fingerprint) ON DELETE CASCADE
             )
         """)
 
@@ -119,17 +123,7 @@ def _migrate_memory_columns(conn):
     cursor = conn.execute("PRAGMA table_info(memory)")
     existing = {row["name"] for row in cursor.fetchall()}
 
-    migrations = [
-        ("visibility", "REAL DEFAULT 1.0"),
-        ("base_score", "REAL DEFAULT 0.5"),
-        ("recall_count", "INTEGER DEFAULT 0"),
-        ("value_score", "REAL DEFAULT 0.5"),
-        ("semantic_status", "TEXT DEFAULT 'valid'"),
-        ("weight", "REAL DEFAULT 0.5"),
-        ("last_recall_at", "INTEGER"),
-    ]
-
-    for col_name, col_def in migrations:
+    for col_name, col_def in MEMORY_COLUMNS_MIGRATION:
         if col_name not in existing:
             conn.execute(f"ALTER TABLE memory ADD COLUMN {col_name} {col_def}")
 

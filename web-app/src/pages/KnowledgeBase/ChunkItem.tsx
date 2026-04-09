@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import DOMPurify from 'dompurify';
 import type { KbChunk } from '../../mock/knowledgeBase';
 
 interface ChunkItemProps {
@@ -16,6 +17,8 @@ const BLOCK_TYPE_STYLES: Record<string, { badge: string; text: string }> = {
 
 export function ChunkItem({ chunk }: ChunkItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+
+  const safeText = DOMPurify.sanitize(chunk.text, { ALLOWED_TAGS: [] });
 
   const style = BLOCK_TYPE_STYLES[chunk.block_type] || BLOCK_TYPE_STYLES.paragraph;
 
@@ -66,16 +69,16 @@ export function ChunkItem({ chunk }: ChunkItemProps) {
         return (
           <pre className="bg-[#1e1e1e] rounded-lg p-4 overflow-x-auto">
             <code className="text-sm text-slate-300 font-mono leading-relaxed">
-              {chunk.text}
+              {safeText}
             </code>
           </pre>
         );
       case 'table':
-        return renderTable(chunk.text);
+        return renderTable(safeText);
       case 'formula':
         return (
           <div className="bg-neural-bg/50 rounded-lg p-6 text-center">
-            <span className="text-2xl text-orange-400 font-mono">{chunk.text}</span>
+            <span className="text-2xl text-orange-400 font-mono">{safeText}</span>
           </div>
         );
       case 'heading':
@@ -85,13 +88,13 @@ export function ChunkItem({ chunk }: ChunkItemProps) {
             chunk.heading_level === 2 ? 'text-lg' :
             chunk.heading_level === 3 ? 'text-base' : 'text-sm'
           }`}>
-            {chunk.text}
+            {safeText}
           </h3>
         );
       default:
         return (
           <p className="text-slate-300 leading-relaxed whitespace-pre-wrap font-chinese">
-            {chunk.text}
+            {safeText}
           </p>
         );
     }
@@ -135,7 +138,7 @@ export function ChunkItem({ chunk }: ChunkItemProps) {
         {/* Preview (when collapsed) */}
         {!isExpanded && chunk.block_type !== 'heading' && (
           <span className="text-sm text-slate-500 truncate ml-auto">
-            {chunk.text.slice(0, 50)}...
+            {safeText.slice(0, 50)}...
           </span>
         )}
       </button>
