@@ -297,17 +297,27 @@ async def clear_dialogue_messages():
     """清空对话历史（开启新会话时调用）
 
     1. 取消45s静息计时器
-    2. 解冻FreezeManager，触发存储（queue_messages）
-    3. 清空对话上下文
+    2. 解冻FreezeManager
+    3. 处理 dialogue_messages 中的用户消息（存储）
+    4. 清空对话上下文
     """
     recall_timer.cancel()
 
     unfreeze_result = freeze_manager.unfreeze()
-    queue_messages = unfreeze_result.get("queue_messages", [])
+    freeze_manager.clear_queue()
+
+    # 提取待处理的用户消息
+    messages_to_process = []
+    with dialogue_messages_lock:
+        messages_to_process = [
+            entry["user_message"]
+            for entry in dialogue_messages
+            if entry.get("user_message")
+        ]
 
     all_events = []
 
-    if queue_messages:
+    if messages_to_process:
 
         class EventCollector:
             def __init__(self):
@@ -343,21 +353,22 @@ async def clear_dialogue_messages():
                 )
 
         def run_storage():
-            collector = EventCollector()
-            for idx, msg in enumerate(queue_messages):
-                from src.system.storage_flow import process_user_message
+            from src.system.storage_flow import process_user_message
 
+            collector = EventCollector()
+            events = []
+            for idx, msg in enumerate(messages_to_process):
                 result = process_user_message(msg, idx + 1, event_bus=collector)
                 if result.get("success"):
-                    all_events.extend(collector.events)
+                    events.extend(collector.events)
                     collector.events = []
-            return all_events
+            return events
 
         import asyncio
 
         loop = asyncio.get_event_loop()
-        storage_events = await loop.run_in_executor(None, run_storage)
-        logger.info(f"[clear] 存储 {len(queue_messages)} 条队列消息")
+        all_events = await loop.run_in_executor(None, run_storage)
+        logger.info(f"[clear] 存储 {len(messages_to_process)} 条用户消息")
 
     with dialogue_messages_lock:
         dialogue_messages.clear()
@@ -365,7 +376,7 @@ async def clear_dialogue_messages():
     return ok(
         {
             "cleared": True,
-            "queued_messages": len(queue_messages),
+            "processed_messages": len(messages_to_process),
             "storage_events": all_events,
         }
     )
