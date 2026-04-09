@@ -3,6 +3,7 @@
 import subprocess
 import time
 import os
+import shutil
 import signal
 import sys
 
@@ -63,7 +64,7 @@ def start():
 
     time.sleep(2)
 
-    npm_cmd = r"C:\Program Files\nodejs\npm.cmd"
+    npm_cmd = shutil.which("npm") or "npm"
 
     # Install frontend deps if needed
     if not os.path.exists(os.path.join(FRONTEND_DIR, "node_modules")):
