@@ -124,6 +124,8 @@ class DialogueAgent:
             self.conversation_history = list(conversation_history)
 
         if message:
+            self._user_message = message
+            self._load_kb_tools = self._should_load_kb_tools(message)
             self.conversation_history.append({"role": "user", "content": message})
             self._maybe_compress()
 
