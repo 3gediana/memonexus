@@ -483,7 +483,7 @@ class DialogueAgent:
 
 - keys：从可用分类选择相关的（可多个）
 - query：具体要查什么
-- data：可选，日期如"{yesterday}"
+- date_range：可选，日期如"{yesterday}"（昨天）或"2024-01-01至2024-01-07"
 
 示例："我爱吃什么"→召回preference/food，"昨天学了啥"→召回study
 
