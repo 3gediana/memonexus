@@ -1,8 +1,9 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
+import { forceX, forceY, forceCollide } from 'd3-force';
 import { eventBus } from '../../utils/EventBus';
 import { MEMORY_GRAPH_UPDATED } from '../../constants/events';
-import { getKeyColor } from '../../mock/memoryGraph';
+import { getKeyColor, getClusterColor } from '../../mock/memoryGraph';
 
 interface GraphNode {
   id: string;
@@ -68,6 +69,7 @@ export function MemoryGraph() {
           memory: n.memory,
           value_score: n.value_score ?? n.weight ?? 0,
           recall_count: n.recall_count ?? 0,
+          cluster_id: n.cluster_id || 'unclustered',
         }));
 
         const rawLinks = (linksData.data?.edges || linksData.data || []).map((l: any) => ({
@@ -105,6 +107,28 @@ export function MemoryGraph() {
       unsubscribe();
     };
   }, [fetchData]);
+
+  // 社区聚类力布局
+  useEffect(() => {
+    if (!graphRef.current || !graphData?.nodes?.length) return;
+
+    const clusterIds = [...new Set(graphData.nodes.map((n: any) => n.cluster_id))];
+    const clusterCount = Math.max(clusterIds.length, 1);
+
+    graphRef.current.d3Force('x', forceX((d: any) => {
+      const idx = clusterIds.indexOf(d.cluster_id);
+      const angle = (idx / clusterCount) * 2 * Math.PI;
+      return window.innerWidth / 2 + 180 * Math.cos(angle);
+    }).strength(0.2));
+
+    graphRef.current.d3Force('y', forceY((d: any) => {
+      const idx = clusterIds.indexOf(d.cluster_id);
+      const angle = (idx / clusterCount) * 2 * Math.PI;
+      return window.innerHeight / 2 + 180 * Math.sin(angle);
+    }).strength(0.2));
+
+    graphRef.current.d3Force('collision', forceCollide(8));
+  }, [graphData]);
 
   const activeKeys = useMemo(() =>
     selectedKeys.size === 0
@@ -414,7 +438,7 @@ export function MemoryGraph() {
             nodeId="id"
             nodeLabel={(node: any) => node.tag}
             nodeVal={(node: any) => getNodeSize(node.value_score)}
-            nodeColor={(node: any) => getKeyColor(node.key)}
+            nodeColor={(node: any) => getClusterColor(node.cluster_id)}
             linkWidth={(link: any) => getLinkWidth(link.effective_strength)}
             linkColor={() => 'rgba(100, 116, 139, 0.4)'}
             nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {

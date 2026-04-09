@@ -14,6 +14,22 @@ export const getKeyColor = (keyName: string): string => {
   return KEY_COLOR_POOL[hash % KEY_COLOR_POOL.length];
 };
 
+// 社区聚类颜色池
+export const CLUSTER_COLOR_POOL = [
+  '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+  '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#F093FB',
+  '#00D9FF', '#FF9A9E', '#A8EDEA', '#FFECD2', '#D299C2',
+  '#89F7FE', '#FDCBF1', '#E0C3FC', '#FDBB2D', '#5FC3E4',
+  '#FF8A65', '#A1887F', '#90A4AE', '#80CBC4', '#B39DDB',
+];
+
+// 根据社区ID获取颜色
+export const getClusterColor = (clusterId: string): string => {
+  if (clusterId === 'unclustered') return '#666666';
+  const hash = clusterId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return CLUSTER_COLOR_POOL[hash % CLUSTER_COLOR_POOL.length];
+};
+
 // 获取节点大小
 export const getNodeSize = (valueScore: number) => {
   // 范围: 0.45 -> 4, 0.95 -> 10
