@@ -379,9 +379,13 @@ class KeyAgent:
         if not batch:
             return {"success": True, "edges": []}
 
+        if self.event_bus:
+            self.event_bus.emit_thinking(
+                "KeyAgent", f"building_edges batch_size={len(batch)}"
+            )
+
         context = f"新记忆指纹：{new_fp}\n新记忆内容：{new_memory}\n当前批次已有记忆：{json.dumps(batch, ensure_ascii=False)}"
 
-        # 只给 build_edges 工具，防止模型调用 get_memory_by_fingerprint
         BUILD_EDGES_ONLY = [
             t for t in KEY_AGENT_TOOLS if t["function"]["name"] == "build_edges"
         ]
@@ -410,7 +414,15 @@ class KeyAgent:
                 return {"success": True, "edges": args.get("edges", [])}
             return {"success": True, "edges": []}
 
-        return call_with_retry(_call)
+        result = call_with_retry(_call)
+
+        if self.event_bus:
+            edges_count = len(result.get("edges", []))
+            self.event_bus.emit_result(
+                "KeyAgent", {"phase": "build_edges", "edges_found": edges_count}
+            )
+
+        return result
 
     def _build_batch_edge_prompt(self) -> str:
         return f"""## 你的角色

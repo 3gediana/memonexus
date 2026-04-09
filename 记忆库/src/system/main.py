@@ -524,11 +524,7 @@ def _handle_recall_from_key(
     # 先提交上次的命中统计
     _submit_pending_hits(dialogue)
 
-    # 如果有事件总线，发送RecallAgent开始事件
-    if event_bus:
-        event_bus.emit_thinking("RecallAgent", f"searching_keys: {', '.join(keys)}")
-
-    # 如果传了date_range，优先从sub获取对话记录
+    # 如果传了date_range，优先从sub获取对话记录（纯数据库操作，无模型参与）
     if date_range:
         from src.tools.sub_tools import query_sub_by_time
 
@@ -578,6 +574,10 @@ def _handle_recall_from_key(
             "content": f"没有找到{date_range}期间的对话记录",
             "recall_blocks": [],
         }
+
+    # 走key数据库召回链路（有KeyAgent模型参与）
+    if event_bus:
+        event_bus.emit_thinking("RecallAgent", f"searching_keys: {', '.join(keys)}")
 
     # 没有date_range，走key数据库召回链路
     tracker = get_preference_tracker()
@@ -1009,7 +1009,17 @@ def handle_user_message_streaming(
                         )
 
                     if tool_name.startswith("kb_"):
+                        if event_bus:
+                            event_bus.emit_thinking("KBTool", f"executing {tool_name}")
                         tool_result = execute_kb_tool(tool_name, tool_params)
+                        if event_bus:
+                            event_bus.emit_result(
+                                "KBTool",
+                                {
+                                    "tool": tool_name,
+                                    "success": tool_result.get("success", False),
+                                },
+                            )
                     elif tool_name == "get_key_summaries":
                         tool_result = _handle_get_key_summaries()
                     elif tool_name in ("recall_from_key", "recall_from_keys"):
@@ -1082,7 +1092,11 @@ def handle_user_message_streaming(
                         else:
                             existing_memories = get_visible_memories(key)
                             result = _process_with_key_agent(
-                                key, content, tag, existing_memories, event_bus=event_bus
+                                key,
+                                content,
+                                tag,
+                                existing_memories,
+                                event_bus=event_bus,
                             )
 
                             if result.get("success"):
@@ -1111,6 +1125,18 @@ def handle_user_message_streaming(
                                         logger.warning(
                                             f"[save_to_key] AssociationAgent failed: {e}"
                                         )
+
+                                if event_bus:
+                                    event_bus.emit_result(
+                                        "StorageAgent",
+                                        {
+                                            "action": result.get("action"),
+                                            "key": key,
+                                            "fingerprint": result.get(
+                                                "fingerprint", ""
+                                            )[:12],
+                                        },
+                                    )
                             else:
                                 tool_result = {
                                     "success": False,
