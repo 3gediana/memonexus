@@ -482,7 +482,11 @@ def process_user_message(message: str, turn_index: int, event_bus=None) -> dict:
 
     if event_bus:
         event_bus.emit_result(
-            "RoutingAgent", {"candidates": len(candidates) if candidates else 0}
+            "RoutingAgent",
+            {
+                "candidates": len(candidates) if candidates else 0,
+                "keys": [c.get("target_key") for c in (candidates or [])],
+            },
         )
 
     if not candidates:

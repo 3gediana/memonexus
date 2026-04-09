@@ -139,7 +139,14 @@ class AssociationAgent:
             if msg and getattr(msg, "tool_calls", None):
                 tool_call = msg.tool_calls[0]
                 args = json.loads(tool_call.function.arguments)
-                return args.get("edges", [])
+                edges = args.get("edges", [])
+                if event_bus:
+                    event_bus.emit_result(
+                        "AssociationAgent", {"edges_found": len(edges)}
+                    )
+                return edges
+            if event_bus:
+                event_bus.emit_result("AssociationAgent", {"edges_found": 0})
             return []
 
         result = call_with_retry(_call)

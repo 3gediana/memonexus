@@ -280,12 +280,21 @@ export function ChatDemo() {
     setIsStreaming(true);
     setIsThinking(false);
     setMessages([]);
-    setCurrentEvents([]);
     setStorageResult(null);
     reasoningRef.current = '';
     if (currentInstanceId) {
       localStorage.removeItem(`chat_history_${currentInstanceId}`);
     }
+
+    // Add separator for new conversation
+    setCurrentEvents(prev => [...prev, {
+      id: `sep_${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString(),
+      agentLabel: 'Session',
+      agentColor: '#6b7280',
+      direction: 'call' as const,
+      toolName: '--- New Conversation ---',
+    }]);
 
     try {
       const res = await fetch('/api/dialogue/clear', { method: 'POST' });
@@ -379,7 +388,6 @@ export function ChatDemo() {
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsStreaming(true);
-    setCurrentEvents([]);
     setStorageResult(null);
     reasoningRef.current = '';
     connect(currentInstanceId, userMessage.content, userMessage.turn);
