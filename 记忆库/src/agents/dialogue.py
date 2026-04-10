@@ -81,7 +81,7 @@ class DialogueAgent:
         response = chat_completion(
             messages=self.conversation_history,
             system=system_prompt,
-            tools=tools,
+            tools=tools, # 仅包含 KB 工具的原生定义
             provider="deepseek",
         )
 
@@ -136,8 +136,21 @@ class DialogueAgent:
     ):
         import re
 
+        # 将 dialogue_messages 格式转换为 LLM 期望的格式
+        # dialogue_messages 格式: {turn, user_message, assistant_message, has_recalled}
+        # LLM 期望格式: {role, content}
         if conversation_history is not None:
-            self.conversation_history = list(conversation_history)
+            llm_history = []
+            for entry in conversation_history:
+                if not isinstance(entry, dict):
+                    continue
+                user_msg = entry.get("user_message")
+                if user_msg:
+                    llm_history.append({"role": "user", "content": str(user_msg) if not isinstance(user_msg, str) else user_msg})
+                assistant_msg = entry.get("assistant_message")
+                if assistant_msg:
+                    llm_history.append({"role": "assistant", "content": str(assistant_msg) if not isinstance(assistant_msg, str) else assistant_msg})
+            self.conversation_history = llm_history
 
         if message:
             self._user_message = message
@@ -161,16 +174,14 @@ class DialogueAgent:
         stream = chat_completion(
             messages=self.conversation_history,
             system=memory_space_block + system_prompt,
-            tools=tools,
+            tools=tools, # 仅包含 KB 工具的原生定义
             provider="deepseek",
             stream=True,
         )
 
         self._reasoning_buffer = ""
         content_buffer = ""
-        reasoning_phase = False
         self._last_content_end = 0
-        search_start = 0
 
         tool_pattern = re.compile(
             r"\[(?:TOOL|OL):(\w+)\](.*?)\[(?:/TOOL|/OL)\]", re.DOTALL
@@ -178,136 +189,135 @@ class DialogueAgent:
         trash_pattern = re.compile(r"\[(?:TOOL|OL):[^\]]*$")
 
         for content_delta, reasoning, is_final, finish_reason, tc in stream:
+            # 1. 处理思考过程
             if reasoning and reasoning != self._reasoning_buffer:
-                reasoning_phase = True
                 new_reasoning = reasoning[len(self._reasoning_buffer) :]
                 self._reasoning_buffer = reasoning
                 if new_reasoning:
                     yield {"type": "reasoning", "delta": new_reasoning}
 
+                # 在由于流式输出，可能从思考过程提取工具并直接处理
                 for event in self._extract_tool_blocks_from_reasoning():
                     yield event
-            elif reasoning_phase and (
-                not reasoning or reasoning == self._reasoning_buffer
-            ):
-                reasoning_phase = False
 
-            if content_delta and not reasoning_phase:
+            # 2. 处理回复内容
+            if content_delta:
                 content_buffer += content_delta
-                search_start = self._last_content_end
 
-                # Try to find and process complete tool blocks
-                found_tool = False
-                for m in tool_pattern.finditer(content_buffer, search_start):
-                    # Found complete tool block
-                    found_tool = True
+                # 开始查找完整工具块
+                while True:
+                    search_start = self._last_content_end
+                    m = tool_pattern.search(content_buffer, search_start)
 
-                    # Output content before tool block
-                    if m.start() > search_start:
-                        yield {
-                            "type": "content",
-                            "delta": content_buffer[search_start : m.start()],
-                        }
+                    if m:
+                        # 找到完整工具块
+                        # a. 先输出工具块之前的内容
+                        if m.start() > search_start:
+                            yield {
+                                "type": "content",
+                                "delta": content_buffer[search_start : m.start()],
+                            }
 
-                    # Extract tool info
-                    tool_name = m.group(1)
-                    args_text = m.group(2).strip()
-                    try:
-                        args = json.loads(args_text)
-                    except:
-                        args = args_text
+                        # b. 解析并输出工具调用
+                        tool_name = m.group(1)
+                        args_text = m.group(2).strip()
+                        try:
+                            args = json.loads(args_text)
+                        except:
+                            args = args_text
 
-                    # Output tool call event
-                    yield {
-                        "type": "tool_call",
-                        "tool_name": tool_name,
-                        "params": args,
-                        "tool_call_id": f"call_{self._last_tool_call_id or uuid.uuid4().hex[:12]}",
-                    }
-                    logger.debug(
-                        f"[ToolParse] Found complete tool: {tool_name}, end_tag_pos={content_buffer.find('[/TOOL]', m.end())}"
-                    )
-                    self._last_tool_call_id = (self._last_tool_call_id or 0) + 1
-
-                    # Handle report_hits specially
-                    if tool_name == "report_hits":
-                        fps = (
-                            args.get("fingerprints", [])
-                            if isinstance(args, dict)
-                            else []
-                        )
-                        for fp in fps:
-                            self.add_pending_hit(fp)
-                        yield {
+                        self._last_tool_call_id = (self._last_tool_call_id or 0) + 1
+                        tool_call_dict = {
                             "type": "tool_call",
                             "tool_name": tool_name,
                             "params": args,
-                            "tool_call_id": f"call_{self._last_tool_call_id - 1}",
+                            "tool_call_id": f"call_{self._last_tool_call_id}",
                         }
-                        yield {
-                            "type": "tool_return",
-                            "tool_name": tool_name,
-                            "tool_call_id": f"call_{self._last_tool_call_id - 1}",
-                            "result": json.dumps(
-                                {"success": True, "content": "hits reported"}
-                            ),
-                        }
+                        yield tool_call_dict
 
-                    # Update position after tool block
-                    end_tag = content_buffer.find("[/TOOL]", m.end())
-                    if end_tag < 0:
-                        end_tag = content_buffer.find("[/OL]", m.end())
-                    if end_tag >= 0:
-                        self._last_content_end = end_tag + len("[/TOOL]")
-                        if content_buffer[end_tag : end_tag + 5] == "[/OL]":
-                            self._last_content_end = end_tag + len("[/OL]")
-                    break  # Only process first tool block
-
-                if not found_tool:
-                    # No complete tool block found - check if we're building one
-                    remaining = content_buffer[search_start:]
-
-                    # Conservative approach: check if content MIGHT be part of a tool block
-                    # Any '[' could potentially start [TOOL:xxx]...[/TOOL]
-                    # So we only output content that clearly cannot be part of a tool block
-
-                    # Check if there's a '[' in the content
-                    has_bracket = "[" in remaining
-
-                    if has_bracket:
-                        # Content has '[' - might be forming a tool block
-                        # Only output content BEFORE the first '['
-                        bracket_pos = remaining.find("[")
-                        if bracket_pos > 0:
-                            # Output content before '['
+                        # 特殊处理 report_hits
+                        if tool_name == "report_hits":
+                            fps = args.get("fingerprints", []) if isinstance(args, dict) else []
+                            for fp in fps:
+                                self.add_pending_hit(fp)
                             yield {
-                                "type": "content",
-                                "delta": remaining[:bracket_pos],
+                                "type": "tool_return",
+                                "tool_name": tool_name,
+                                "tool_call_id": tool_call_dict["tool_call_id"],
+                                "result": json.dumps({"success": True, "content": "hits reported"}),
                             }
-                        self._last_content_end = search_start + bracket_pos
-                        logger.debug(
-                            f"[ToolParse] Has bracket, waiting. buffer={remaining[:20]}"
-                        )
+
+                        # c. 更新 self._last_content_end 到工具结束标记之后
+                        end_tag_pos = content_buffer.find("[/TOOL]", m.end())
+                        if end_tag_pos < 0:
+                            end_tag_pos = content_buffer.find("[/OL]", m.end())
+
+                        if end_tag_pos >= 0:
+                            tag_len = 7 if content_buffer[end_tag_pos:end_tag_pos+7] == "[/TOOL]" else 5
+                            self._last_content_end = end_tag_pos + tag_len
+                        else:
+                            # 理论上匹配了 pattern 就应该有结束标记，但以防万一
+                            self._last_content_end = m.end()
+
+                        # 继续查找下一个工具块
+                        continue
                     else:
-                        # No '[' in content, safe to output
-                        if remaining:
-                            yield {
-                                "type": "content",
-                                "delta": remaining,
-                            }
-                        self._last_content_end = len(content_buffer)
+                        # 没找到完整工具块
+                        remaining = content_buffer[search_start:]
+                        if not remaining:
+                            break
+
+                        # 检查是否有未完成的工具标记 [TOOL:
+                        bracket_pos = remaining.find("[")
+                        if bracket_pos >= 0:
+                            potential_tool = remaining[bracket_pos:]
+
+                            # 严格判断是否是工具标签正在形成：
+                            # potential_tool 是 buffer 中从 "[" 开始的内容
+                            # 如果它以 "[TOOL:" 或 "[OL:" 开头，说明正在形成工具调用
+                            is_tool_prefix = (
+                                potential_tool.startswith("[TOOL:") or
+                                potential_tool.startswith("[OL:")
+                            )
+
+                            if is_tool_prefix:
+                                # 确定是工具调用，耐心缓冲，不要输出
+                                if bracket_pos > 0:
+                                    yield {"type": "content", "delta": remaining[:bracket_pos]}
+                                    self._last_content_end = search_start + bracket_pos
+                                # 保持 [ 及其后面内容在 buffer 中等待闭合标签
+                                break
+                            else:
+                                # 明确不是我们的工具标签（比如是用户说的普通中括号）
+                                yield {"type": "content", "delta": remaining}
+                                self._last_content_end = len(content_buffer)
+                                break
+                        else:
+                            # 没有 [，直接输出全部
+                            yield {"type": "content", "delta": remaining}
+                            self._last_content_end = len(content_buffer)
+                            break
 
             if is_final:
                 if self._last_content_end < len(content_buffer):
                     remaining = content_buffer[self._last_content_end :]
+
+                    # 强力过滤：移除所有可能的工具标记和底层模型的原生指令
+                    # 包括我们定义的 [TOOL] 和 潜在的原生标签 <|...|>
                     cleaned = trash_pattern.sub("", remaining)
+                    cleaned = re.sub(r"<\|.*?\|>", "", cleaned)
+                    cleaned = re.sub(r"&lt;\|.*?\|&gt;", "", cleaned) # 适配HTML转义情况
+
                     if cleaned.strip():
                         yield {"type": "content", "delta": cleaned}
                 break
 
         if finish_reason == "tool_calls" and tc:
             if content_buffer:
-                yield {"type": "content", "delta": content_buffer}
+                # 检查并清理内容缓冲（防止残留标签）
+                cleaned_content = trash_pattern.sub("", content_buffer)
+                if cleaned_content.strip():
+                    yield {"type": "content", "delta": cleaned_content}
                 content_buffer = ""
 
             args = tc.get("arguments", "{}")
@@ -319,6 +329,8 @@ class DialogueAgent:
             tool_call_id = tc.get("id", f"call_{self._last_tool_call_id or 0}")
 
             self._last_tool_call_id = (self._last_tool_call_id or 0) + 1
+
+            # 手报命中工具特殊处理
             if tool_name == "report_hits":
                 fps = params.get("fingerprints", []) if isinstance(params, dict) else []
                 for fp in fps:
@@ -337,13 +349,13 @@ class DialogueAgent:
                 }
                 return
 
+            # 通用工具调用（包括 kb_search 等原生调用）
             yield {
                 "type": "tool_call",
                 "tool_name": tool_name,
                 "params": params,
                 "tool_call_id": tool_call_id,
             }
-            self._last_tool_call_id = (self._last_tool_call_id or 0) + 1
             return
 
         self.conversation_history.append(
@@ -527,24 +539,26 @@ class DialogueAgent:
 - 用户的问题需要你了解他的背景才能回答好
 - 用户自报了姓名或身份
 
-### 调用格式（必须严格遵守）：
-先用一句简短的话回应用户（让用户知道你在处理），然后紧接着输出工具调用：
-[TOOL:recall_from_keys]{{"keys": ["分类1", "分类2"], "query": "用一句话描述你想查什么"}}[/TOOL]
+### 调用格式 (必须严格遵守文本标签格式):
+1. 召回记忆: [TOOL:recall_from_keys]{{"keys": ["分类"], "query": "我想查...", "data": "时间范围(可选)"}}[/TOOL]
+2. 存储新记忆: [TOOL:save_to_key]{{"key": "分类", "content": "要存的内容", "tag": "简短标签"}}[/TOOL]
+
+⚠️ 关于 `data` 参数的重要限制（请仔细阅读）：
+- 格式必须是严格的日期格式 `YYYY-MM-DD`，或日期范围 `YYYY-MM-DD至YYYY-MM-DD`。绝对不能写成"昨天"、"上周"等自然语言！
+- 注意！一旦且仅当你传入了 `data` 参数，底层系统将**绕过所有分类记忆库**，直接降级为纯时间检索——它会且仅会去历史对话档案（sub）中寻找当天的原始对话记录。
+- 因此，如果你需要的是系统经过消化提取后归档的结构化个人记忆，**绝对不要**传 `data` 参数！只有当你确实被要求"看看昨天具体的对话原文"时才使用。
 
 ### 示例：
 用户说："我最近复习得好累" →
 小林，辛苦了！让我翻一下你的复习记录 📖
 [TOOL:recall_from_keys]{{"keys": ["study", "emotion"], "query": "最近的复习状态和情绪"}}[/TOOL]
 
-用户说："帮我盘点一下底牌" →
-好的，我来帮你整理一下各科的情况 📊
-[TOOL:recall_from_keys]{{"keys": ["study", "schedule"], "query": "目前的学习进度和各科成绩"}}[/TOOL]
-
-用户说："胃疼怎么办" →
-胃疼可不能忽视！我先看看你的健康记录 🏥
-[TOOL:recall_from_keys]{{"keys": ["health", "preference"], "query": "健康状况和饮食习惯"}}[/TOOL]
+用户说："记一下，我打算改考深圳大学了" →
+收到！深大也是非常棒的选择，地理位置很有优势。我这就帮你更新目标院校 📍
+[TOOL:save_to_key]{{"key": "study", "content": "用户改考目标为深圳大学计算机专业", "tag": "目标院校变更"}}[/TOOL]
 
 ### 绝对禁止：
+- 绝对禁止使用底层模型的原生函数调用格式（如 `<｜DSML｜>` 等内部标签）！必须且只能使用约定的 `[TOOL:函数名]{...}[/TOOL]` 纯文本格式。
 - 禁止在没有调用工具的情况下编造用户的个人经历
 - 禁止把背景便签里的常识当作用户的个人记忆
 - 禁止说"我没有你的记录"——你有记忆库，先查再说！
