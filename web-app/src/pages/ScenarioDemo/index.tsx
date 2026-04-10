@@ -58,11 +58,17 @@ const QUICK_PROMPTS = [
 
 /* ─────────────── Component ─────────────── */
 export function ScenarioDemo() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const saved = localStorage.getItem('memonexus_scenario_messages');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
-  const [memoryTimeline, setMemoryTimeline] = useState<MemoryTimelineItem[]>([]);
+  const [memoryTimeline, setMemoryTimeline] = useState<MemoryTimelineItem[]>(() => {
+    const saved = localStorage.getItem('memonexus_scenario_timeline');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [currentInstanceId, setCurrentInstanceId] = useState('');
   const [activeRecallIds, setActiveRecallIds] = useState<Set<string>>(new Set());
   const [storageResult, setStorageResult] = useState<StorageResult | null>(null);
@@ -70,6 +76,15 @@ export function ScenarioDemo() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const timelineEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Persist to localStorage
+  useEffect(() => {
+    localStorage.setItem('memonexus_scenario_messages', JSON.stringify(messages));
+  }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem('memonexus_scenario_timeline', JSON.stringify(memoryTimeline));
+  }, [memoryTimeline]);
 
   // Fetch current instance
   useEffect(() => {
@@ -138,6 +153,14 @@ export function ScenarioDemo() {
           }
           return prev;
         });
+      } else if (content) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'assistant' && !last.content) {
+            return [...prev.slice(0, -1), { ...last, content }];
+          }
+          return prev;
+        });
       }
     },
     onError: (message) => {
@@ -166,12 +189,70 @@ export function ScenarioDemo() {
         setMemoryTimeline(prev => [...prev, ...newItems]);
       }
     },
-    onToolCall: () => {},
-    onToolReturn: () => {},
-    onAgentThinking: () => {},
-    onAgentToolCall: () => {},
-    onAgentResult: () => {},
-    onStorageProgress: () => {},
+    onToolCall: (toolName, params, toolCallId) => {
+      setIsThinking(false);
+      setMemoryTimeline(prev => [...prev, {
+        id: toolCallId,
+        type: 'recall',
+        key: toolName,
+        tag: '调用工具',
+        memory: typeof params === 'string' ? params : JSON.stringify(params),
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        fingerprint: toolCallId
+      }]);
+    },
+    onToolReturn: (toolName, toolCallId, result) => {
+      // Find and update the tool call event
+      setMemoryTimeline(prev => prev.map(item => 
+        item.id === toolCallId ? { ...item, tag: '已返回结果', memory: result } : item
+      ));
+    },
+    onAgentThinking: (agent, phase) => {
+      setIsThinking(true);
+      setMemoryTimeline(prev => [...prev, {
+        id: `thinking_${Date.now()}`,
+        type: 'recall',
+        key: agent,
+        tag: '正在思考',
+        memory: phase,
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        fingerprint: ''
+      }]);
+    },
+    onAgentToolCall: (agent, tool, params) => {
+      setIsThinking(false);
+      setMemoryTimeline(prev => [...prev, {
+        id: `agent_tool_${Date.now()}`,
+        type: 'recall',
+        key: agent,
+        tag: `使用 ${tool}`,
+        memory: JSON.stringify(params),
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        fingerprint: ''
+      }]);
+    },
+    onAgentResult: (agent, result) => {
+      setMemoryTimeline(prev => [...prev, {
+        id: `agent_res_${Date.now()}`,
+        type: 'recall',
+        key: agent,
+        tag: '已得出结论',
+        memory: JSON.stringify(result),
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        fingerprint: ''
+      }]);
+    },
+    onStorageProgress: (stage, progress) => {
+      setMemoryTimeline(prev => [...prev, {
+        id: `progress_${Date.now()}`,
+        type: 'store',
+        key: '存储引擎',
+        tag: stage,
+        memory: JSON.stringify(progress),
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        fingerprint: ''
+      }]);
+    },
     onHeartbeat: () => {},
   });
 
@@ -188,6 +269,8 @@ export function ScenarioDemo() {
     disconnect();
     setMessages([]);
     setMemoryTimeline([]);
+    localStorage.removeItem('memonexus_scenario_messages');
+    localStorage.removeItem('memonexus_scenario_timeline');
     setStorageResult(null);
     reasoningRef.current = '';
     try {
@@ -210,7 +293,14 @@ export function ScenarioDemo() {
     setIsStreaming(true);
     setStorageResult(null);
     reasoningRef.current = '';
-    connect(currentInstanceId, userMessage.content, userMessage.turn, 'study_mentor');
+    
+    // Convert current messages to history format
+    const history = messages.map(m => ({
+      role: m.role,
+      content: m.content
+    }));
+    
+    connect(currentInstanceId, userMessage.content, userMessage.turn, 'study_mentor', history);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

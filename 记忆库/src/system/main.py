@@ -935,6 +935,10 @@ def handle_user_message_streaming(
 
     try:
         append_to_session(message, turn_index)
+        
+        # 将用户消息持久化到历史档案库(sub表)
+        from src.tools.sub_tools import insert_sub
+        insert_sub(message, turn_index)
 
         dialogue = DialogueAgent(list_all_keys(), event_bus=event_bus, persona=persona)
 
@@ -947,16 +951,7 @@ def handle_user_message_streaming(
             )
 
             msg_to_send = message if iteration == 0 else None
-            if iteration == 0 and conversation_history:
-                # 将 dialogue_messages 格式转换为 LLM 期望的格式
-                hist_to_send = []
-                for entry in conversation_history:
-                    if entry.get("user_message"):
-                        hist_to_send.append({"role": "user", "content": entry["user_message"]})
-                    if entry.get("assistant_message"):
-                        hist_to_send.append({"role": "assistant", "content": entry["assistant_message"]})
-            else:
-                hist_to_send = None
+            hist_to_send = conversation_history if (iteration == 0 and conversation_history) else None
 
             for event in dialogue.receive_message_streaming(msg_to_send, hist_to_send):
                 event_type = event.get("type")
@@ -976,6 +971,11 @@ def handle_user_message_streaming(
                     # 最终回复
                     reply = event["content"]
                     conversation_history.append({"role": "assistant", "content": reply})
+                    
+                    # 将助手的回复也存入历史档案库(sub表)
+                    from src.tools.sub_tools import insert_sub
+                    insert_sub(f"助手：{reply}", turn_index)
+                    append_to_session(f"助手：{reply}", turn_index)
 
                     # 后台异步调用单独的分析agent分析回复引用了哪些记忆（不计入streaming时间）
                     import threading
