@@ -49,6 +49,20 @@ class DialogueAgent:
                 f"[Compression] 压缩对话历史: {old_len} -> {len(self.conversation_history)} 条"
             )
 
+    def _cleanup_kb_tool_results(self):
+        """将历史对话中 KB 工具的巨大返回结果替换为占位符，防止跨轮次爆 Token"""
+        kb_tools = {"kb_search", "kb_sans_search", "kb_get_chunk", "kb_get_document", "kb_index", "kb_list_indexed", "kb_get_stats"}
+        call_ids_to_clean = set()
+        
+        for msg in self.conversation_history:
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                for tc in msg["tool_calls"]:
+                    if tc.get("function", {}).get("name") in kb_tools:
+                        call_ids_to_clean.add(tc.get("id"))
+            elif msg.get("role") == "tool" and msg.get("tool_call_id") in call_ids_to_clean:
+                if msg.get("content") != "[info used cleared]":
+                    msg["content"] = "[info used cleared]"
+
     def receive_message(
         self, message: str = None, conversation_history: list = None
     ) -> dict:
@@ -57,6 +71,7 @@ class DialogueAgent:
         if message:
             self._user_message = message
             self._load_kb_tools = self._should_load_kb_tools(message)
+            self._cleanup_kb_tool_results()  # 清理上一轮的知识库沉重返回
             self.conversation_history.append({"role": "user", "content": message})
             self._maybe_compress()
 
@@ -127,6 +142,7 @@ class DialogueAgent:
         if message:
             self._user_message = message
             self._load_kb_tools = self._should_load_kb_tools(message)
+            self._cleanup_kb_tool_results()  # 清理上一轮的知识库沉重返回
             self.conversation_history.append({"role": "user", "content": message})
             self._maybe_compress()
 
