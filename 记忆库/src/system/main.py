@@ -916,7 +916,7 @@ def _format_history(conversation_history: list) -> str:
 
 
 def handle_user_message_streaming(
-    message: str, turn_index: int, conversation_history: list = None, event_bus=None
+    message: str, turn_index: int, conversation_history: list = None, event_bus=None, persona: str = None
 ):
     """流式处理用户消息
 
@@ -936,7 +936,7 @@ def handle_user_message_streaming(
     try:
         append_to_session(message, turn_index)
 
-        dialogue = DialogueAgent(list_all_keys(), event_bus=event_bus)
+        dialogue = DialogueAgent(list_all_keys(), event_bus=event_bus, persona=persona)
 
         recalled_keys = set()
         max_iterations = 8

@@ -7,9 +7,10 @@ import { ChatDemo } from './pages/ChatDemo';
 import { AgentFlow } from './pages/AgentFlow';
 import { Settings } from './pages/Settings';
 import { Sub } from './pages/Sub';
+import { ScenarioDemo } from './pages/ScenarioDemo';
 import { Header } from './components/Header';
 
-type Page = 'chat' | 'stats' | 'memory' | 'knowledge' | 'graph' | 'agent' | 'settings' | 'sub';
+type Page = 'chat' | 'scenario' | 'stats' | 'memory' | 'knowledge' | 'graph' | 'agent' | 'settings' | 'sub';
 
 interface Instance {
   id: string;
@@ -81,6 +82,7 @@ function App() {
       {/* 主内容区 */}
       <main className="flex-1 flex flex-col neural-grid overflow-hidden">
         {currentPage === 'chat' && <ChatDemo />}
+        {currentPage === 'scenario' && <ScenarioDemo />}
         {currentPage === 'stats' && <StatsDashboard />}
         {currentPage === 'memory' && <MemoryList />}
         {currentPage === 'knowledge' && <KnowledgeBase />}

@@ -104,7 +104,7 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const connect = useCallback((instanceId: string, message: string, turn: number = 1) => {
+  const connect = useCallback((instanceId: string, message: string, turn: number = 1, persona?: string) => {
     // 断开已有连接
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -117,10 +117,12 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
     abortControllerRef.current = controller;
 
     // 发送 POST 请求启动 SSE 流
+    const body: any = { message, turn };
+    if (persona) body.persona = persona;
     fetch(`/api/chat/stream/${instanceId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, turn }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     })
       .then(response => {

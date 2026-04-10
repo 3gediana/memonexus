@@ -17,7 +17,7 @@ logger = get_module_logger("dialogue")
 
 
 class DialogueAgent:
-    def __init__(self, all_keys: list, event_bus=None):
+    def __init__(self, all_keys: list, event_bus=None, persona: str = None):
         self.all_keys = all_keys
         self.conversation_history = []
         self.pending_hits = []
@@ -31,6 +31,7 @@ class DialogueAgent:
         self._event_bus = event_bus
         self._load_kb_tools = False
         self._user_message = ""
+        self._persona = persona
 
     def _get_compression_agent(self):
         if self._compression_agent is None:
@@ -439,12 +440,14 @@ class DialogueAgent:
         yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         today_weekday = "一二三四五六日"[now.weekday()]
 
+        persona_block = self._get_persona_prompt()
+
         recall_section = ""
         if recall_blocks:
             recall_section = (
                 f"\n\n## 当前召回的记忆\n{format_recall_blocks(recall_blocks)}\n"
             )
-            return f"""基于以下信息回复用户：
+            return f"""{persona_block}基于以下信息回复用户：
 {recall_section}"""
 
         if self._load_kb_tools:
@@ -454,11 +457,35 @@ class DialogueAgent:
                 today, today_weekday, yesterday, self.all_keys
             )
 
+    def _get_persona_prompt(self) -> str:
+        """根据 persona 返回角色设定提示词"""
+        if self._persona == "study_mentor":
+            return """你是「Memonexus · 考研陪伴导师」，一位温暖、专业、富有经验的考研辅导老师。
+
+## 你的人设
+- 你不是冷冰冰的AI，你是学生备考路上最可靠的陪伴者
+- 你了解考研的每一个环节：择校、复习规划、真题训练、面试准备、心态调节
+- 你会记住关于这个学生的一切——学习进度、情绪状态、生活习惯、目标院校
+- 你说话风格：温暖但不啰嗦，专业但不说教，像一个亦师亦友的学长/学姐
+
+## 回复原则
+- 主动关联过去的记忆来给出个性化建议（例如："你上次说高数复习到第三章了，这周进展如何？"）
+- 当学生表达压力/焦虑时，先共情再给建议，不要急着讲解决方案
+- 给出的学习建议要具体、可执行，不要泛泛而谈
+- 适当使用 emoji 增加亲和力，但不要过度
+- 如果召回了相关记忆，自然地融入回复中，让学生感受到"你真的记得我"
+- 回复长度适中，不要太短（敷衍），也不要太长（信息过载）
+
+"""  # noqa: E501
+        # 默认：无额外角色设定
+        return ""
+
     def _get_recall_system_prompt(
         self, today: str, today_weekday: str, yesterday: str, all_keys: list
     ) -> str:
         keys_str = "、".join(f'"{k}"' for k in all_keys[:20]) if all_keys else "暂无"
-        return f"""你是记忆助手。
+        persona_block = self._get_persona_prompt()
+        return f"""{persona_block}你是记忆助手。
 
 ## 当前时间
 今天：{today}（星期{today_weekday}）
@@ -466,28 +493,66 @@ class DialogueAgent:
 ## 可用分类
 {keys_str}
 
-## 记忆空间（用户手动维护的便签，不是AI记忆库！）
-记忆空间是用户手动维护的永久便签列表，与AI的记忆库完全不同。
-- 记忆库：AI使用工具（save_recall/recall_from_memory等）自动存储和召回的记忆
-- 记忆空间：用户自己写的便签，仅作为对话参考上下文，不是记忆库！
-重要：当你需要存储记忆时，必须使用save_recall工具存入记忆库！
-重要：当你需要召回记忆时，必须使用recall_from_memory工具从记忆库检索！
+## 背景便签（仅供参考的通用常识）
+以下便签只是通用常识，不是用户的个人记忆。
 
-## 直接回复
-不需要存储或召回时，直接回答即可。"""
+## 记忆召回机制（最高优先级！）
+你拥有一个强大的外部记忆库，里面存储了用户过去告诉你的所有个人信息。
+但是，你无法直接看到这些记忆——你必须通过工具来检索。
+
+### 何时必须调用工具（满足任一条件就必须调用）：
+- 用户提到了自己的学习进度、成绩、分数
+- 用户提到了自己的情绪、压力、心态
+- 用户提到了自己的健康、作息、饮食
+- 用户提到了自己的计划、日程、安排
+- 用户提到了自己的偏好、习惯
+- 用户提到了某个人（朋友、室友、家人等）
+- 用户说"帮我回忆"、"你还记得吗"、"之前"等
+- 用户的问题需要你了解他的背景才能回答好
+- 用户自报了姓名或身份
+
+### 调用格式（必须严格遵守）：
+先用一句简短的话回应用户（让用户知道你在处理），然后紧接着输出工具调用：
+[TOOL:recall_from_keys]{{"keys": ["分类1", "分类2"], "query": "用一句话描述你想查什么"}}[/TOOL]
+
+### 示例：
+用户说："我最近复习得好累" →
+小林，辛苦了！让我翻一下你的复习记录 📖
+[TOOL:recall_from_keys]{{"keys": ["study", "emotion"], "query": "最近的复习状态和情绪"}}[/TOOL]
+
+用户说："帮我盘点一下底牌" →
+好的，我来帮你整理一下各科的情况 📊
+[TOOL:recall_from_keys]{{"keys": ["study", "schedule"], "query": "目前的学习进度和各科成绩"}}[/TOOL]
+
+用户说："胃疼怎么办" →
+胃疼可不能忽视！我先看看你的健康记录 🏥
+[TOOL:recall_from_keys]{{"keys": ["health", "preference"], "query": "健康状况和饮食习惯"}}[/TOOL]
+
+### 绝对禁止：
+- 禁止在没有调用工具的情况下编造用户的个人经历
+- 禁止把背景便签里的常识当作用户的个人记忆
+- 禁止说"我没有你的记录"——你有记忆库，先查再说！
+
+## 何时可以直接回复
+仅当用户的问题完全不涉及个人信息时（如"1+1等于几"、"什么是微积分"），才可以直接回答。"""
 
     def _get_kb_system_prompt(self) -> str:
-        return """你是记忆助手，同时具备知识库查询能力。
+        persona_block = self._get_persona_prompt()
+        return f"""{persona_block}你是记忆助手，同时具备知识库查询能力。
 
 ## 知识库
 当用户询问知识库相关内容时，可以查询知识库获取信息。
 
-## 记忆空间（用户手动维护的便签，不是AI记忆库！）
-记忆空间是用户手动维护的永久便签列表，与AI的记忆库完全不同。
-- 记忆库：AI使用工具（save_recall/recall_from_memory等）自动存储和召回的记忆
-- 记忆空间：用户自己写的便签，仅作为对话参考上下文，不是记忆库！
-重要：当你需要存储记忆时，必须使用save_recall工具存入记忆库！
-重要：当你需要召回记忆时，必须使用recall_from_memory工具从记忆库检索！
+## 背景便签（仅供参考的通用常识）
+以下便签只是通用常识，不是用户的个人记忆。
+
+## 记忆召回机制（重要！）
+需要查询用户个人信息时，先用一句话回应用户，然后输出：
+[TOOL:recall_from_keys]{{"keys": ["分类1", "分类2"], "query": "查询关键字"}}[/TOOL]
+注意：
+1. `keys` 数组从可用分类中挑选1-2个。
+2. 也可以直接使用知识库搜索工具（如果是知识库需求）。
+3. 绝对不能瞎编，必须严格根据工具返回数据。
 
 ## 直接回复
 如果问题与知识库和记忆都无关，直接回答即可。"""
@@ -495,7 +560,7 @@ class DialogueAgent:
     def _get_memory_space_block(self) -> str:
         memory_space = get_memory_context_block()
         if memory_space:
-            return f"<记忆空间>\n{memory_space}\n</记忆空间>\n"
+            return f"<背景便签>\n{memory_space}\n</背景便签>\n"
         return ""
 
     def _get_tools(self) -> list:

@@ -119,6 +119,9 @@ def _process_with_key_agent(
 
     if action == "add_memory_to_key":
         resolved_tag = args.get("tag", tag)
+        if not resolved_tag:
+            resolved_tag = args.get("memory", memory)[:20]
+            
         importance_score = args.get("importance_score", 0.5)
 
         # 执行存储，记忆落位，获得指纹
@@ -132,7 +135,7 @@ def _process_with_key_agent(
         if add_result["success"]:
             # 校验 tag 不为空
             if not resolved_tag:
-                logger.warning(f"存储后 tag 为空，reject (key={key})")
+                logger.warning(f"存储后 tag 为空（Fallback失败），reject (key={key})")
                 _delete_memory_by_fp(add_result["added"]["fingerprint"])
                 return {"success": False, "error": "EMPTY_TAG"}
 
@@ -183,11 +186,15 @@ def _process_with_key_agent(
         # 先查询旧记忆的边，用于失败时回滚
         old_edges = _get_edges_for_fingerprint(old_fp)
 
+        new_tag = args.get("new_tag", tag)
+        if not new_tag:
+            new_tag = args.get("new_memory", memory)[:20]
+
         replace_result = replace_memory_in_key(
             args.get("key", key),
             old_fp,
             args.get("new_memory", memory),
-            args.get("new_tag", tag),
+            new_tag,
             args.get("new_summary_item", memory[:50]),
         )
         if replace_result["success"]:

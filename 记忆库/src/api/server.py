@@ -94,6 +94,7 @@ recall_timer.set_callback(_on_recall_timeout)
 class ChatRequest(BaseModel):
     message: str
     turn: int = 1
+    persona: Optional[str] = None
 
 
 class MemoryCreate(BaseModel):
@@ -296,17 +297,13 @@ async def get_dialogue_messages():
 async def clear_dialogue_messages():
     """清空对话历史（开启新会话时调用）
 
-    返回 SSE 流，实时推送存储事件：
-    1. 取消45s静息计时器
-    2. 解冻FreezeManager
-    3. 流式处理 dialogue_messages 中的用户消息
-    4. 清空对话上下文
+    立即清空对话上下文并返回，旧消息的存储在后台静默执行，不阻塞用户。
     """
     recall_timer.cancel()
     freeze_manager.unfreeze()
     freeze_manager.clear_queue()
 
-    # 提取待处理的用户消息
+    # 先快照旧消息，然后立刻清空（不阻塞新对话）
     messages_to_process = []
     with dialogue_messages_lock:
         messages_to_process = [
@@ -314,83 +311,28 @@ async def clear_dialogue_messages():
             for entry in dialogue_messages
             if entry.get("user_message")
         ]
+        dialogue_messages.clear()
 
-    async def clear_event_generator():
-        import time as time_module
-
-        if not messages_to_process:
-            with dialogue_messages_lock:
-                dialogue_messages.clear()
-            yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': 0})}\n\n"
-            return
-
-        yield f"event: clearing_start\ndata: {json.dumps({'type': 'clearing_start', 'total': len(messages_to_process)})}\n\n"
-
-        q: asyncio.Queue = asyncio.Queue()
-        event_bus = AgentEventBus()
-        event_bus.bind_queue(q)
-        event_bus.bind_loop(asyncio.get_running_loop())
-        total_added = []
-
-        def run_storage():
-            from src.system.storage_flow import process_user_message
-
-            for idx, msg in enumerate(messages_to_process):
-                result = process_user_message(msg, idx + 1, event_bus=event_bus)
-                if result.get("success") and result.get("memories_added"):
-                    total_added.extend(result["memories_added"])
-            q.put_nowait(None)
-
-        t = threading.Thread(target=run_storage, daemon=True)
-        t.start()
-
-        # 流式推送事件
-        while True:
+    # 后台静默存储旧消息（fire-and-forget）
+    if messages_to_process:
+        def _bg_storage():
             try:
-                event = await asyncio.wait_for(q.get(), timeout=5)
-            except asyncio.TimeoutError:
-                continue
+                from src.system.storage_flow import process_user_message
 
-            if event is None:
-                break
+                total_added = 0
+                for idx, msg in enumerate(messages_to_process):
+                    result = process_user_message(msg, idx + 1)
+                    if result.get("success") and result.get("memories_added"):
+                        total_added += len(result["memories_added"])
+                logger.info(
+                    f"[clear/bg] 后台存储完成: {len(messages_to_process)} 条消息, 新增 {total_added} 条记忆"
+                )
+            except Exception as e:
+                logger.error(f"[clear/bg] 后台存储异常: {e}")
 
-            event_type = event.get("type", "")
-            if event_type == "agent_thinking":
-                yield f"event: agent_thinking\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "agent_tool_call":
-                yield f"event: agent_tool_call\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            elif event_type == "agent_result":
-                yield f"event: agent_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        threading.Thread(target=_bg_storage, daemon=True).start()
 
-        # 存储完成
-        if total_added:
-            transformed = [
-                {
-                    "memory_id": m.get("fingerprint", ""),
-                    "key": m.get("key", ""),
-                    "content_preview": m.get("memory", "")[:100]
-                    + ("..." if len(m.get("memory", "")) > 100 else ""),
-                }
-                for m in total_added
-            ]
-            yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': transformed, 'total_memories': len(transformed)}, ensure_ascii=False)}\n\n"
-
-        with dialogue_messages_lock:
-            dialogue_messages.clear()
-
-        logger.info(
-            f"[clear] 存储 {len(messages_to_process)} 条用户消息, 新增 {len(total_added)} 条记忆"
-        )
-        yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': len(messages_to_process), 'memories_added': len(total_added)})}\n\n"
-
-    return StreamingResponse(
-        clear_event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
+    return ok({"processed": len(messages_to_process), "cleared": True})
 
 
 # @app.post("/api/chat")
@@ -441,7 +383,7 @@ async def chat_stream(instance_id: str, req: ChatRequest):
                 with dialogue_messages_lock:
                     dialogue_snapshot = dialogue_messages.copy()
                 for event in handle_user_message_streaming(
-                    req.message, req.turn, dialogue_snapshot, event_bus=event_bus
+                    req.message, req.turn, dialogue_snapshot, event_bus=event_bus, persona=req.persona
                 ):
                     count += 1
                     q.put_nowait(event)

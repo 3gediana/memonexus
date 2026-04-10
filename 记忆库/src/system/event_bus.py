@@ -25,53 +25,56 @@ class AgentEventBus:
         """绑定事件循环"""
         self._loop = loop
 
+    def _emit(self, event: dict):
+        """统一发送事件：推到本地queue + 广播给所有监控客户端"""
+        if self._queue is not None:
+            self._queue.put_nowait(event)
+        # 同时广播到全局监控流
+        try:
+            from src.system.event_broadcaster import EventBroadcaster
+            EventBroadcaster.get_instance().broadcast(event)
+        except Exception:
+            pass
+
     def emit_thinking(self, agent: str, phase: str):
         """发送Agent思考事件"""
-        if self._queue is None:
-            return
         event = {
             "type": "agent_thinking",
             "agent": agent,
             "phase": phase,
         }
-        self._queue.put_nowait(event)
+        self._emit(event)
         logger.debug(f"[EventBus] emit_thinking: {agent} - {phase}")
 
     def emit_tool_call(self, agent: str, tool: str, params: dict):
         """发送Agent工具调用事件"""
-        if self._queue is None:
-            return
         event = {
             "type": "agent_tool_call",
             "agent": agent,
             "tool": tool,
             "params": params,
         }
-        self._queue.put_nowait(event)
+        self._emit(event)
         logger.debug(f"[EventBus] emit_tool_call: {agent} - {tool}")
 
     def emit_result(self, agent: str, result: dict):
         """发送Agent执行结果事件"""
-        if self._queue is None:
-            return
         event = {
             "type": "agent_result",
             "agent": agent,
             "result": result,
         }
-        self._queue.put_nowait(event)
+        self._emit(event)
         logger.debug(f"[EventBus] emit_result: {agent}")
 
     def emit_storage_progress(self, stage: str, progress: dict):
         """发送存储进度事件"""
-        if self._queue is None:
-            return
         event = {
             "type": "storage_progress",
             "stage": stage,
             "progress": progress,
         }
-        self._queue.put_nowait(event)
+        self._emit(event)
         logger.debug(f"[EventBus] emit_storage_progress: {stage}")
 
     async def _heartbeat_loop(self):
