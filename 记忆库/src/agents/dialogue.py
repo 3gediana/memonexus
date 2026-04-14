@@ -51,15 +51,26 @@ class DialogueAgent:
 
     def _cleanup_kb_tool_results(self):
         """将历史对话中 KB 工具的巨大返回结果替换为占位符，防止跨轮次爆 Token"""
-        kb_tools = {"kb_search", "kb_sans_search", "kb_get_chunk", "kb_get_document", "kb_index", "kb_list_indexed", "kb_get_stats"}
+        kb_tools = {
+            "kb_search",
+            "kb_sans_search",
+            "kb_get_chunk",
+            "kb_get_document",
+            "kb_index",
+            "kb_list_indexed",
+            "kb_get_stats",
+        }
         call_ids_to_clean = set()
-        
+
         for msg in self.conversation_history:
             if msg.get("role") == "assistant" and "tool_calls" in msg:
                 for tc in msg["tool_calls"]:
                     if tc.get("function", {}).get("name") in kb_tools:
                         call_ids_to_clean.add(tc.get("id"))
-            elif msg.get("role") == "tool" and msg.get("tool_call_id") in call_ids_to_clean:
+            elif (
+                msg.get("role") == "tool"
+                and msg.get("tool_call_id") in call_ids_to_clean
+            ):
                 if msg.get("content") != "[info used cleared]":
                     msg["content"] = "[info used cleared]"
 
@@ -81,7 +92,7 @@ class DialogueAgent:
         response = chat_completion(
             messages=self.conversation_history,
             system=system_prompt,
-            tools=tools, # 仅包含 KB 工具的原生定义
+            tools=tools,  # 仅包含 KB 工具的原生定义
             provider="deepseek",
         )
 
@@ -146,10 +157,24 @@ class DialogueAgent:
                     continue
                 user_msg = entry.get("user_message")
                 if user_msg:
-                    llm_history.append({"role": "user", "content": str(user_msg) if not isinstance(user_msg, str) else user_msg})
+                    llm_history.append(
+                        {
+                            "role": "user",
+                            "content": str(user_msg)
+                            if not isinstance(user_msg, str)
+                            else user_msg,
+                        }
+                    )
                 assistant_msg = entry.get("assistant_message")
                 if assistant_msg:
-                    llm_history.append({"role": "assistant", "content": str(assistant_msg) if not isinstance(assistant_msg, str) else assistant_msg})
+                    llm_history.append(
+                        {
+                            "role": "assistant",
+                            "content": str(assistant_msg)
+                            if not isinstance(assistant_msg, str)
+                            else assistant_msg,
+                        }
+                    )
             self.conversation_history = llm_history
 
         if message:
@@ -174,7 +199,7 @@ class DialogueAgent:
         stream = chat_completion(
             messages=self.conversation_history,
             system=memory_space_block + system_prompt,
-            tools=tools, # 仅包含 KB 工具的原生定义
+            tools=tools,  # 仅包含 KB 工具的原生定义
             provider="deepseek",
             stream=True,
         )
@@ -210,6 +235,9 @@ class DialogueAgent:
                     m = tool_pattern.search(content_buffer, search_start)
 
                     if m:
+                        logger.info(
+                            f"[Stream] REGEX MATCH at {m.start()}-{m.end()}, tool={m.group(1)}"
+                        )
                         # 找到完整工具块
                         # a. 先输出工具块之前的内容
                         if m.start() > search_start:
@@ -237,14 +265,20 @@ class DialogueAgent:
 
                         # 特殊处理 report_hits
                         if tool_name == "report_hits":
-                            fps = args.get("fingerprints", []) if isinstance(args, dict) else []
+                            fps = (
+                                args.get("fingerprints", [])
+                                if isinstance(args, dict)
+                                else []
+                            )
                             for fp in fps:
                                 self.add_pending_hit(fp)
                             yield {
                                 "type": "tool_return",
                                 "tool_name": tool_name,
                                 "tool_call_id": tool_call_dict["tool_call_id"],
-                                "result": json.dumps({"success": True, "content": "hits reported"}),
+                                "result": json.dumps(
+                                    {"success": True, "content": "hits reported"}
+                                ),
                             }
 
                         # c. 更新 self._last_content_end 到工具结束标记之后
@@ -253,7 +287,12 @@ class DialogueAgent:
                             end_tag_pos = content_buffer.find("[/OL]", m.end())
 
                         if end_tag_pos >= 0:
-                            tag_len = 7 if content_buffer[end_tag_pos:end_tag_pos+7] == "[/TOOL]" else 5
+                            tag_len = (
+                                7
+                                if content_buffer[end_tag_pos : end_tag_pos + 7]
+                                == "[/TOOL]"
+                                else 5
+                            )
                             self._last_content_end = end_tag_pos + tag_len
                         else:
                             # 理论上匹配了 pattern 就应该有结束标记，但以防万一
@@ -275,20 +314,29 @@ class DialogueAgent:
                             # 严格判断是否是工具标签正在形成：
                             # potential_tool 是 buffer 中从 "[" 开始的内容
                             # 如果它以 "[TOOL:" 或 "[OL:" 开头，说明正在形成工具调用
-                            is_tool_prefix = (
-                                potential_tool.startswith("[TOOL:") or
-                                potential_tool.startswith("[OL:")
+                            is_tool_prefix = potential_tool.startswith(
+                                "[TOOL:"
+                            ) or potential_tool.startswith("[OL:")
+
+                            # [ 后面可能是 [TOOL: 或 [OL: 的前缀（如 [、[T、[O、[TO 等），也缓冲
+                            maybe_tool = (
+                                potential_tool == "["
+                                or potential_tool.startswith("[T")
+                                or potential_tool.startswith("[O")
                             )
 
-                            if is_tool_prefix:
-                                # 确定是工具调用，耐心缓冲，不要输出
+                            if is_tool_prefix or maybe_tool:
+                                # 确定是工具调用或可能是，耐心缓冲，不要输出
                                 if bracket_pos > 0:
-                                    yield {"type": "content", "delta": remaining[:bracket_pos]}
+                                    yield {
+                                        "type": "content",
+                                        "delta": remaining[:bracket_pos],
+                                    }
                                     self._last_content_end = search_start + bracket_pos
                                 # 保持 [ 及其后面内容在 buffer 中等待闭合标签
                                 break
                             else:
-                                # 明确不是我们的工具标签（比如是用户说的普通中括号）
+                                # 确认不是工具前缀（如 [成绩]），安全输出全部
                                 yield {"type": "content", "delta": remaining}
                                 self._last_content_end = len(content_buffer)
                                 break
@@ -306,7 +354,9 @@ class DialogueAgent:
                     # 包括我们定义的 [TOOL] 和 潜在的原生标签 <|...|>
                     cleaned = trash_pattern.sub("", remaining)
                     cleaned = re.sub(r"<\|.*?\|>", "", cleaned)
-                    cleaned = re.sub(r"&lt;\|.*?\|&gt;", "", cleaned) # 适配HTML转义情况
+                    cleaned = re.sub(
+                        r"&lt;\|.*?\|&gt;", "", cleaned
+                    )  # 适配HTML转义情况
 
                     if cleaned.strip():
                         yield {"type": "content", "delta": cleaned}

@@ -1,7 +1,10 @@
 """统一LLM调用层"""
 
+import logging
 from openai import OpenAI
 from src.system.config import load_config
+
+logger = logging.getLogger("memory_assistant.llm_client")
 
 
 _clients = {}
@@ -92,11 +95,15 @@ def chat_completion(
 
 
 def _parse_stream_response(response):
-    """解析MiniMax流式响应
+    """解析流式响应
 
     Yields:
         (content_delta: str, reasoning_buffer: str, is_final: bool, finish_reason: str, tool_call: dict or None)
     """
+    import logging
+
+    logger = logging.getLogger("memory_assistant.llm_client")
+
     reasoning_buffer = ""
     finish_reason = None
     tool_call = None
@@ -122,11 +129,19 @@ def _parse_stream_response(response):
         finish_reason = getattr(choice, "finish_reason", None)
         is_final = (finish_reason == "stop") or (finish_reason == "tool_calls")
 
+        if content or is_final:
+            logger.info(
+                f"[LLM] chunk: content={content[:80]!r} finish_reason={finish_reason} is_final={is_final}"
+            )
+
         # tool_call 信息（需要累积，因为arguments可能跨多个chunk）
         if hasattr(delta, "tool_calls") and delta.tool_calls:
             tc = delta.tool_calls[0]
             func = getattr(tc, "function", None)
             if func:
+                logger.info(
+                    f"[LLM] NATIVE tool_calls detected: name={getattr(func, 'name', '')}"
+                )
                 if tool_call is None:
                     tool_call = {
                         "name": getattr(func, "name", ""),

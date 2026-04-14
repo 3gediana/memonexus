@@ -20,6 +20,7 @@ from src.tools.query_tools import get_memory_by_fingerprint as get_memory_by_fp_
 from src.tools.weight_tools import calculate_dynamic_k, get_connectivity_factor
 from src.tools.visibility_tools import update_visibility
 from src.system.config import load_config
+from src.system.llm_client import chat_completion
 from src.tools.edge_calibrator import get_calibrator
 from src.tools.topk_calculator import get_calculator
 from src.tools.preference_tracker import get_preference_tracker
@@ -63,9 +64,13 @@ def handle_user_message(
             llm_history = []
             for entry in conversation_history:
                 if entry.get("user_message"):
-                    llm_history.append({"role": "user", "content": entry["user_message"]})
+                    llm_history.append(
+                        {"role": "user", "content": entry["user_message"]}
+                    )
                 if entry.get("assistant_message"):
-                    llm_history.append({"role": "assistant", "content": entry["assistant_message"]})
+                    llm_history.append(
+                        {"role": "assistant", "content": entry["assistant_message"]}
+                    )
             conversation_history = llm_history
         conversation_history.append({"role": "user", "content": message})
 
@@ -916,7 +921,11 @@ def _format_history(conversation_history: list) -> str:
 
 
 def handle_user_message_streaming(
-    message: str, turn_index: int, conversation_history: list = None, event_bus=None, persona: str = None
+    message: str,
+    turn_index: int,
+    conversation_history: list = None,
+    event_bus=None,
+    persona: str = None,
 ):
     """流式处理用户消息
 
@@ -935,9 +944,10 @@ def handle_user_message_streaming(
 
     try:
         append_to_session(message, turn_index)
-        
+
         # 将用户消息持久化到历史档案库(sub表)
         from src.tools.sub_tools import insert_sub
+
         insert_sub(message, turn_index)
 
         dialogue = DialogueAgent(list_all_keys(), event_bus=event_bus, persona=persona)
@@ -951,7 +961,11 @@ def handle_user_message_streaming(
             )
 
             msg_to_send = message if iteration == 0 else None
-            hist_to_send = conversation_history if (iteration == 0 and conversation_history) else None
+            hist_to_send = (
+                conversation_history
+                if (iteration == 0 and conversation_history)
+                else None
+            )
 
             for event in dialogue.receive_message_streaming(msg_to_send, hist_to_send):
                 event_type = event.get("type")
@@ -971,9 +985,10 @@ def handle_user_message_streaming(
                     # 最终回复
                     reply = event["content"]
                     conversation_history.append({"role": "assistant", "content": reply})
-                    
+
                     # 将助手的回复也存入历史档案库(sub表)
                     from src.tools.sub_tools import insert_sub
+
                     insert_sub(f"助手：{reply}", turn_index)
                     append_to_session(f"助手：{reply}", turn_index)
 
@@ -1037,7 +1052,9 @@ def handle_user_message_streaming(
                                 "RecallAgent",
                                 {
                                     "success": tool_result.get("success", False),
-                                    "key_summaries_count": len(tool_result.get("key_summaries", {})),
+                                    "key_summaries_count": len(
+                                        tool_result.get("key_summaries", {})
+                                    ),
                                 },
                             )
                     elif tool_name in ("recall_from_key", "recall_from_keys"):
