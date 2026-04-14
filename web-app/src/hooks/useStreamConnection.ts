@@ -103,9 +103,10 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
   const [isConnected, setIsConnected] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const connect = useCallback((instanceId: string, message: string, turn: number = 1, persona?: string, history?: any[]) => {
-    // 断开已有连接
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -116,10 +117,10 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // 发送 POST 请求启动 SSE 流
     const body: any = { message, turn };
     if (persona) body.persona = persona;
     if (history) body.history = history;
+
     fetch(`/api/chat/stream/${instanceId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -134,16 +135,18 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
         const decoder = new TextDecoder();
         let buffer = '';
         let currentEventType = 'message';
+        const opts = optionsRef.current;
 
         const readStream = () => {
-          reader?.read().then(({ done, value }) => {
+          if (!reader || controller.signal.aborted) return;
+          reader.read().then(({ done, value }) => {
             if (done || controller.signal.aborted) return;
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() ?? '';
 
-                for (const line of lines) {
+            for (const line of lines) {
               if (line.startsWith('event: ')) {
                 currentEventType = line.slice(7).trim();
                 continue;
@@ -154,59 +157,62 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
 
               try {
                 const rawEvent = JSON.parse(data);
-                // 优先使用 SSE event: 行指定的类型，否则用消息内的 type
                 const eventType = currentEventType || rawEvent.type || 'message';
                 const event = { ...rawEvent, type: eventType } as StreamEvent;
-                currentEventType = 'message'; // 重置
+                currentEventType = 'message';
 
                 switch (event.type) {
                   case 'reasoning':
-                    options.onReasoning?.((event as any).delta || (event as any).content);
+                    opts.onReasoning?.((event as any).delta || (event as any).content);
                     break;
                   case 'content':
-                    options.onContent?.((event as any).delta || (event as any).content);
+                    opts.onContent?.((event as any).delta || (event as any).content);
                     break;
                   case 'done':
-                    options.onDone?.((event as any).content, (event as any).has_recalled, (event as any).recall_blocks);
+                    opts.onDone?.((event as any).content, (event as any).has_recalled, (event as any).recall_blocks);
                     setIsStreaming(false);
                     break;
                   case 'error':
-                    options.onError?.((event as any).message);
+                    opts.onError?.((event as any).message);
                     setIsStreaming(false);
                     break;
                   case 'storage_result':
-                    options.onStorageResult?.(event as any);
+                    opts.onStorageResult?.(event as any);
                     break;
                   case 'tool_call':
-                    options.onToolCall?.((event as any).tool_name, (event as any).params, (event as any).tool_call_id, (event as any).result);
+                    opts.onToolCall?.((event as any).tool_name, (event as any).params, (event as any).tool_call_id, (event as any).result);
                     break;
                   case 'tool_return':
-                    options.onToolReturn?.((event as any).tool_name, (event as any).tool_call_id, (event as any).result);
+                    opts.onToolReturn?.((event as any).tool_name, (event as any).tool_call_id, (event as any).result);
                     break;
                   case 'agent_thinking':
-                    options.onAgentThinking?.((event as any).agent, (event as any).phase);
+                    opts.onAgentThinking?.((event as any).agent, (event as any).phase);
                     break;
                   case 'agent_tool_call':
-                    options.onAgentToolCall?.((event as any).agent, (event as any).tool, (event as any).params);
+                    opts.onAgentToolCall?.((event as any).agent, (event as any).tool, (event as any).params);
                     break;
                   case 'agent_result':
-                    options.onAgentResult?.((event as any).agent, (event as any).result);
+                    opts.onAgentResult?.((event as any).agent, (event as any).result);
                     break;
                   case 'storage_progress':
-                    options.onStorageProgress?.((event as any).stage, (event as any).progress);
+                    opts.onStorageProgress?.((event as any).stage, (event as any).progress);
                     break;
                   default:
                     if ((event as any).type === 'heartbeat') {
-                      options.onHeartbeat?.();
+                      opts.onHeartbeat?.();
                     }
                     break;
                 }
               } catch {
-                // 忽略解析错误
+                // ignore parse errors
               }
             }
 
             readStream();
+          }).catch(err => {
+            if (err.name !== 'AbortError') {
+              console.error('[Stream] read error:', err);
+            }
           });
         };
 
@@ -214,7 +220,7 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
-          options.onError?.(err.message);
+          opts.onError?.(err.message);
           setIsStreaming(false);
         }
       });
@@ -222,7 +228,7 @@ export function useStreamConnection(options: UseStreamConnectionOptions) {
     return () => {
       controller.abort();
     };
-  }, [options]);
+  }, []);
 
   const disconnect = useCallback(() => {
     abortControllerRef.current?.abort();

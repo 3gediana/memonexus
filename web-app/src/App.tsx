@@ -79,12 +79,12 @@ function App() {
         onPageChange={setCurrentPage}
       />
 
-      {/* 主内容区 - ChatDemo和AgentFlow保持挂载以保留流式连接状态 */}
+      {/* 主内容区 - ChatDemo和AgentFlow保持挂载，用opacity-0代替invisible确保SSE流不中断 */}
       <main className="flex-1 neural-grid overflow-hidden relative">
-        <div className={`absolute inset-0 ${currentPage === 'chat' ? 'z-10 visible' : 'z-0 invisible pointer-events-none'}`}>
+        <div className={`absolute inset-0 transition-opacity duration-200 ${currentPage === 'chat' ? 'opacity-100 z-10 pointer-events-auto' : 'opacity-0 z-0 pointer-events-none'}`}>
           <ChatDemo />
         </div>
-        <div className={`absolute inset-0 ${currentPage === 'agent' ? 'z-10 visible' : 'z-0 invisible pointer-events-none'}`}>
+        <div className={`absolute inset-0 transition-opacity duration-200 ${currentPage === 'agent' ? 'opacity-100 z-10 pointer-events-auto' : 'opacity-0 z-0 pointer-events-none'}`}>
           <AgentFlow />
         </div>
         {currentPage === 'scenario' && <ScenarioDemo />}

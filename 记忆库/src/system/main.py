@@ -2,6 +2,7 @@
 
 import json
 import time
+import threading
 from src.system.logger import get_module_logger
 from src.system.storage_flow import process_user_message
 from src.system.debug import debug_tool_call, DEBUG_MODE
@@ -987,8 +988,6 @@ def handle_user_message_streaming(
                     conversation_history.append({"role": "assistant", "content": reply})
 
                     # 后台异步调用单独的分析agent分析回复引用了哪些记忆（不计入streaming时间）
-                    import threading
-
                     t = threading.Thread(
                         target=_analyze_hits_with_model,
                         args=(
@@ -1028,17 +1027,68 @@ def handle_user_message_streaming(
                         )
 
                     if tool_name.startswith("kb_"):
-                        if event_bus:
-                            event_bus.emit_thinking("KBTool", f"executing {tool_name}")
-                        tool_result = execute_kb_tool(tool_name, tool_params)
-                        if event_bus:
-                            event_bus.emit_result(
-                                "KBTool",
-                                {
-                                    "tool": tool_name,
-                                    "success": tool_result.get("success", False),
-                                },
+                        if tool_name == "kb_index":
+                            tool_result = {
+                                "success": True,
+                                "status": "indexing",
+                                "message": "Knowledge base indexing started in background",
+                            }
+                            logger.info(f"[kb_index] Background indexing started")
+
+                            def _bg_kb_index(args, eb):
+                                from src.tools.kb_tools import execute_kb_tool
+
+                                try:
+                                    result = execute_kb_tool("kb_index", args)
+                                    logger.info(
+                                        f"[kb_index] Background indexing done: {result.get('indexed', [])}"
+                                    )
+                                    if eb:
+                                        eb.emit_result(
+                                            "KBTool",
+                                            {
+                                                "tool": "kb_index",
+                                                "success": result.get("success", False),
+                                                "indexed_count": len(
+                                                    result.get("indexed", [])
+                                                ),
+                                                "errors": result.get("errors", []),
+                                            },
+                                        )
+                                except Exception as e:
+                                    logger.error(
+                                        f"[kb_index] Background indexing failed: {e}"
+                                    )
+                                    if eb:
+                                        eb.emit_result(
+                                            "KBTool",
+                                            {
+                                                "tool": "kb_index",
+                                                "success": False,
+                                                "error": str(e),
+                                            },
+                                        )
+
+                            t = threading.Thread(
+                                target=_bg_kb_index,
+                                args=(tool_params, event_bus),
                             )
+                            t.daemon = True
+                            t.start()
+                        else:
+                            if event_bus:
+                                event_bus.emit_thinking(
+                                    "KBTool", f"executing {tool_name}"
+                                )
+                            tool_result = execute_kb_tool(tool_name, tool_params)
+                            if event_bus:
+                                event_bus.emit_result(
+                                    "KBTool",
+                                    {
+                                        "tool": tool_name,
+                                        "success": tool_result.get("success", False),
+                                    },
+                                )
                     elif tool_name == "get_key_summaries":
                         tool_result = _handle_get_key_summaries()
                         if event_bus:
@@ -1086,9 +1136,6 @@ def handle_user_message_streaming(
                                 event_bus=event_bus,
                             )
                     elif tool_name == "save_to_key":
-                        from src.system.storage_flow import _process_with_key_agent
-                        from src.tools.visibility_tools import get_visible_memories
-
                         key = tool_params.get("key", "misc")
                         content = tool_params.get("content", "")
                         tag = tool_params.get(
@@ -1101,58 +1148,93 @@ def handle_user_message_streaming(
                                 "error": "content is required",
                             }
                         else:
-                            existing_memories = get_visible_memories(key)
-                            result = _process_with_key_agent(
-                                key,
-                                content,
-                                tag,
-                                existing_memories,
-                                event_bus=event_bus,
-                            )
+                            tool_result = {
+                                "success": True,
+                                "action": "saving",
+                                "key": key,
+                                "content_preview": content[:50],
+                            }
+                            logger.info(f"[save_to_key] 后台存储启动: key={key}")
 
-                            if result.get("success"):
-                                tool_result = {
-                                    "success": True,
-                                    "action": result.get("action"),
-                                    "fingerprint": result.get("fingerprint"),
-                                    "key": key,
-                                }
-                                logger.info(
-                                    f"[save_to_key] 存储成功: key={key}, action={result.get('action')}"
+                            def _bg_save(k, c, t, eb):
+                                from src.system.storage_flow import (
+                                    _process_with_key_agent,
+                                    _process_cross_key_association,
                                 )
-                                if result.get("action") in ("added", "replaced"):
-                                    from src.system.storage_flow import (
-                                        _process_cross_key_association,
-                                    )
+                                from src.tools.visibility_tools import (
+                                    get_visible_memories,
+                                )
 
-                                    try:
-                                        _process_cross_key_association(
-                                            result.get("fingerprint"),
-                                            content,
-                                            key,
-                                            event_bus=event_bus,
+                                try:
+                                    existing = get_visible_memories(k)
+                                    result = _process_with_key_agent(
+                                        k, c, t, existing, event_bus=eb
+                                    )
+                                    if result.get("success"):
+                                        logger.info(
+                                            f"[save_to_key] 后台存储完成: key={k}, action={result.get('action')}"
                                         )
-                                    except Exception as e:
+                                        if result.get("action") in (
+                                            "added",
+                                            "replaced",
+                                        ):
+                                            try:
+                                                _process_cross_key_association(
+                                                    result.get("fingerprint"),
+                                                    c,
+                                                    k,
+                                                    event_bus=eb,
+                                                )
+                                            except Exception as e:
+                                                logger.warning(
+                                                    f"[save_to_key] AssociationAgent failed: {e}"
+                                                )
+                                        if eb:
+                                            eb.emit_result(
+                                                "StorageAgent",
+                                                {
+                                                    "action": result.get("action"),
+                                                    "key": k,
+                                                    "fingerprint": result.get(
+                                                        "fingerprint", ""
+                                                    )[:12],
+                                                },
+                                            )
+                                    else:
                                         logger.warning(
-                                            f"[save_to_key] AssociationAgent failed: {e}"
+                                            f"[save_to_key] 后台存储失败: key={k}, error={result.get('error')}"
+                                        )
+                                        if eb:
+                                            eb.emit_result(
+                                                "StorageAgent",
+                                                {
+                                                    "action": "failed",
+                                                    "key": k,
+                                                    "error": result.get(
+                                                        "error", "Unknown"
+                                                    ),
+                                                },
+                                            )
+                                except Exception as e:
+                                    logger.error(
+                                        f"[save_to_key] 后台存储异常: key={k}, error={e}"
+                                    )
+                                    if eb:
+                                        eb.emit_result(
+                                            "StorageAgent",
+                                            {
+                                                "action": "error",
+                                                "key": k,
+                                                "error": str(e),
+                                            },
                                         )
 
-                                if event_bus:
-                                    event_bus.emit_result(
-                                        "StorageAgent",
-                                        {
-                                            "action": result.get("action"),
-                                            "key": key,
-                                            "fingerprint": result.get(
-                                                "fingerprint", ""
-                                            )[:12],
-                                        },
-                                    )
-                            else:
-                                tool_result = {
-                                    "success": False,
-                                    "error": result.get("error", "Unknown error"),
-                                }
+                            t = threading.Thread(
+                                target=_bg_save,
+                                args=(key, content, tag, event_bus),
+                            )
+                            t.daemon = True
+                            t.start()
                     elif tool_name == "report_hits":
                         fps = (
                             tool_params.get("fingerprints", [])

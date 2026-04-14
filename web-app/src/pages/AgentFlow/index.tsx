@@ -1,9 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
-/* ═══════════════════════════════════════════════════════════
-   Types
-   ═══════════════════════════════════════════════════════════ */
-
 type AgentStatus = 'idle' | 'working' | 'completed';
 
 interface NodeCfg {
@@ -11,8 +7,8 @@ interface NodeCfg {
   label: string;
   desc: string;
   color: string;
-  x: number;
-  y: number;
+  col: number;
+  row: number;
   icon: string;
 }
 
@@ -25,17 +21,13 @@ interface EvtLog {
   color: string;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Pipeline topology — matches real backend agent event names
-   ═══════════════════════════════════════════════════════════ */
-
 const NODES: NodeCfg[] = [
-  { id: 'DialogueAgent',    label: '对话 Agent',   desc: '意图分析 · 工具调度 · 生成回复',  color: '#06B6D4', x: 35, y: 14, icon: '💬' },
-  { id: 'CompressionAgent', label: '压缩 Agent',   desc: '超阈值时压缩对话历史',              color: '#64748B', x: 10, y: 38, icon: '🗜️' },
-  { id: 'RecallAgent',      label: '召回引擎',     desc: 'Key 检索 · 图扩展 · 聚类排序',    color: '#10B981', x: 35, y: 38, icon: '🔍' },
-  { id: 'KeyAgent',         label: 'Key Agent',    desc: '记忆审核 · 同 Key 建边',          color: '#22C55E', x: 60, y: 38, icon: '🔑' },
-  { id: 'AssociationAgent', label: '关联 Agent',   desc: '跨 Key 建立关联边',              color: '#A855F7', x: 75, y: 62, icon: '🔗' },
-  { id: 'HitAnalyzer',      label: '引用分析',     desc: '后台检测回复中的记忆引用',          color: '#F59E0B', x: 10, y: 62, icon: '📊' },
+  { id: 'DialogueAgent',    label: '对话 Agent',   desc: '意图分析 · 工具调度 · 生成回复',  color: '#06B6D4', col: 1, row: 0, icon: '💬' },
+  { id: 'CompressionAgent', label: '压缩 Agent',   desc: '超阈值时压缩对话历史',              color: '#64748B', col: 0, row: 1, icon: '🗜️' },
+  { id: 'RecallAgent',      label: '召回引擎',     desc: 'Key 检索 · 图扩展 · 聚类排序',    color: '#10B981', col: 1, row: 1, icon: '🔍' },
+  { id: 'KeyAgent',         label: 'Key Agent',    desc: '记忆审核 · 同 Key 建边',          color: '#22C55E', col: 2, row: 1, icon: '🔑' },
+  { id: 'HitAnalyzer',      label: '引用分析',     desc: '后台检测回复中的记忆引用',          color: '#F59E0B', col: 0, row: 2, icon: '📊' },
+  { id: 'AssociationAgent', label: '关联 Agent',   desc: '跨 Key 建立关联边',              color: '#A855F7', col: 2, row: 2, icon: '🔗' },
 ];
 
 const EDGES: [string, string][] = [
@@ -50,35 +42,14 @@ const EDGES: [string, string][] = [
 const N: Record<string, NodeCfg> = {};
 for (const n of NODES) N[n.id] = n;
 
-// Backend event agent name aliases
 const ALIAS: Record<string, string> = {
   StorageAgent: 'KeyAgent',
   KBTool:       'DialogueAgent',
 };
 const resolve = (name: string) => ALIAS[name] ?? name;
 
-// Edge path builder — uses percentage coords, SVG viewBox 0 0 100 100
-function edgePath(from: NodeCfg, to: NodeCfg): string {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  // Control point offset proportional to vertical distance
-  const offsetY = Math.abs(dy) * 0.25;
-  const cx = (from.x + to.x) / 2;
-  const cy1 = from.y + offsetY * (dy > 0 ? 1 : -1);
-  const cy2 = to.y - offsetY * (dy > 0 ? 1 : -1);
-  if (dist < 20) {
-    // Short edge — simple quadratic
-    const cpx = cx + (dy > 0 ? 0 : 0);
-    const cpy = (from.y + to.y) / 2 - dx * 0.05;
-    return `M ${from.x} ${from.y} Q ${cpx} ${cpy} ${to.x} ${to.y}`;
-  }
-  return `M ${from.x} ${from.y} C ${cx} ${cy1} ${cx} ${cy2} ${to.x} ${to.y}`;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Sub-components
-   ═══════════════════════════════════════════════════════════ */
+const COL_COUNT = 3;
+const ROW_COUNT = 3;
 
 function AgentNode({ node, status, bubble }: {
   node: NodeCfg;
@@ -88,12 +59,16 @@ function AgentNode({ node, status, bubble }: {
   const working = status === 'working';
   const done    = status === 'completed';
 
+  const colPct = ((node.col + 0.5) / COL_COUNT) * 100;
+  const rowPct = ((node.row + 0.5) / ROW_COUNT) * 100;
+
   return (
     <div
+      data-agent-node={node.id}
       className="absolute z-10 select-none"
       style={{
-        left: `${node.x}%`,
-        top:  `${node.y}%`,
+        left: `${colPct}%`,
+        top:  `${rowPct}%`,
         transform: 'translate(-50%, -50%)',
       }}
     >
@@ -169,91 +144,6 @@ function AgentNode({ node, status, bubble }: {
   );
 }
 
-function FlowEdge({ from, to, active, pathD }: {
-  from: NodeCfg;
-  to: NodeCfg;
-  active: boolean;
-  pathD: string;
-}) {
-  return (
-    <g>
-      {/* Glow track */}
-      {active && (
-        <path
-          d={pathD}
-          fill="none"
-          stroke={from.color}
-          strokeWidth={4}
-          strokeOpacity={0.08}
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
-      {/* Base line */}
-      <path
-        d={pathD}
-        fill="none"
-        stroke={active ? `${from.color}90` : '#1e293b'}
-        strokeWidth={active ? 1.5 : 0.8}
-        vectorEffect="non-scaling-stroke"
-        style={{ transition: 'stroke 0.4s, stroke-width 0.3s' }}
-      />
-      {/* Animated flowing dashes */}
-      {active && (
-        <path
-          d={pathD}
-          fill="none"
-          stroke={from.color}
-          strokeWidth={1.5}
-          strokeOpacity={0.6}
-          strokeDasharray="4 6"
-          vectorEffect="non-scaling-stroke"
-          style={{ animation: 'dashFlow 0.8s linear infinite' }}
-        />
-      )}
-      {/* Direction arrow */}
-      {active && (
-        <circle r={2.5} fill={from.color} opacity={0.9}>
-          <animateMotion dur="1.5s" repeatCount="indefinite" path={pathD} />
-        </circle>
-      )}
-    </g>
-  );
-}
-
-function EventItem({ evt }: { evt: EvtLog }) {
-  const icon = evt.kind === 'thinking' ? '💭'
-             : evt.kind === 'tool'     ? '⚡'
-             : '✅';
-  return (
-    <div
-      className="flex gap-2 py-2 border-b border-slate-800/30 last:border-0"
-      style={{ animation: 'slideIn 0.25s ease-out' }}
-    >
-      <div className="text-xs mt-0.5 flex-shrink-0 opacity-60">{icon}</div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <span
-            className="px-1.5 py-px rounded text-[8px] font-bold"
-            style={{ backgroundColor: `${evt.color}15`, color: evt.color }}
-          >
-            {evt.agent}
-          </span>
-          <span className="text-[9px] text-slate-600 font-mono">{evt.ts}</span>
-        </div>
-        <p className="text-[10px] text-slate-400 leading-snug break-all"
-           style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
-        >
-          {evt.text}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════
-   Main component
-   ═══════════════════════════════════════════════════════════ */
-
 export function AgentFlow() {
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>(
     Object.fromEntries(NODES.map(n => [n.id, 'idle' as AgentStatus]))
@@ -263,22 +153,57 @@ export function AgentFlow() {
   const [keys,    setKeys]    = useState<{ name: string; count: number }[]>([]);
   const [instanceName, setInstanceName] = useState('');
   const [connected, setConnected]       = useState(false);
+  const [edgeLines, setEdgeLines] = useState<{ key: string; x1: number; y1: number; x2: number; y2: number; color: string; active: boolean }[]>([]);
   const timers     = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const evtLogRef  = useRef<HTMLDivElement>(null);
-
-  // Pre-compute edge paths
-  const edgePaths = EDGES.map(([from, to]) => ({
-    key: `${from}-${to}`,
-    from: N[from],
-    to: N[to],
-    d: edgePath(N[from], N[to]),
-  }));
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (evtLogRef.current) {
       evtLogRef.current.scrollTop = evtLogRef.current.scrollHeight;
     }
   }, [events]);
+
+  const updateEdges = useCallback(() => {
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+    const nodes = container.querySelectorAll('[data-agent-node]');
+    const rect = container.getBoundingClientRect();
+    const posMap: Record<string, { cx: number; cy: number }> = {};
+
+    nodes.forEach(el => {
+      const id = el.getAttribute('data-agent-node')!;
+      const nodeRect = el.getBoundingClientRect();
+      posMap[id] = {
+        cx: nodeRect.left + nodeRect.width / 2 - rect.left,
+        cy: nodeRect.top + nodeRect.height / 2 - rect.top,
+      };
+    });
+
+    const lines = EDGES.map(([fromId, toId]) => {
+      const from = posMap[fromId];
+      const to = posMap[toId];
+      if (!from || !to) return null;
+      return {
+        key: `${fromId}-${toId}`,
+        x1: from.cx,
+        y1: from.cy,
+        x2: to.cx,
+        y2: to.cy,
+        color: N[fromId]?.color || '#475569',
+        active: statuses[toId] === 'working' || statuses[fromId] === 'working',
+      };
+    }).filter(Boolean) as typeof edgeLines;
+
+    setEdgeLines(lines);
+  }, [statuses]);
+
+  useEffect(() => {
+    updateEdges();
+    const resizeObs = new ResizeObserver(updateEdges);
+    if (containerRef.current) resizeObs.observe(containerRef.current);
+    return () => resizeObs.disconnect();
+  }, [updateEdges]);
 
   const fetchStatus = useCallback(() => {
     fetch('/api/monitor/status')
@@ -333,7 +258,6 @@ export function AgentFlow() {
     }, 3500);
   }, []);
 
-  // ── SSE ──
   useEffect(() => {
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout>;
@@ -407,21 +331,6 @@ export function AgentFlow() {
     };
   }, [setWorking, setCompleted, addEvent, showBubble, fetchStatus]);
 
-  // ── Compute active edges ──
-  const activeEdges = new Set<string>();
-  for (const [from, to] of EDGES) {
-    if (statuses[to] === 'working') activeEdges.add(`${from}-${to}`);
-  }
-  // Also highlight edges from working source
-  for (const [from] of EDGES) {
-    if (statuses[from] === 'working') {
-      const edgesFrom = EDGES.filter(([f]) => f === from);
-      for (const [, to] of edgesFrom) {
-        activeEdges.add(`${from}-${to}`);
-      }
-    }
-  }
-
   const workingCount = Object.values(statuses).filter(s => s === 'working').length;
 
   return (
@@ -493,32 +402,74 @@ export function AgentFlow() {
           </div>
 
           {/* Flow canvas */}
-          <div className="flex-1 relative overflow-hidden">
+          <div ref={containerRef} className="flex-1 relative overflow-hidden">
             <div className="absolute inset-0 opacity-[0.025]" style={{
               backgroundImage: 'radial-gradient(circle, #94a3b8 1px, transparent 1px)',
               backgroundSize: '24px 24px',
             }} />
 
-            {/* Pipeline zone labels */}
-            <div className="absolute z-20 top-3 left-[18%]
-                            px-2.5 py-0.5 rounded-md bg-cyan-950/40 border border-cyan-800/20 text-[9px] text-cyan-400/60 font-medium tracking-wider">
-              RECALL
-            </div>
-            <div className="absolute z-20 top-3 right-[15%]
-                            px-2.5 py-0.5 rounded-md bg-green-950/40 border border-green-800/20 text-[9px] text-green-400/60 font-medium tracking-wider">
-              STORAGE
-            </div>
-
-            {/* SVG edges */}
+            {/* SVG edges — positioned with real pixel coords from DOM */}
             <svg
               className="absolute inset-0 w-full h-full"
-              viewBox="0 0 100 80"
-              preserveAspectRatio="none"
               style={{ pointerEvents: 'none' }}
             >
-              {edgePaths.map(({ key, from, to, d }) => (
-                <FlowEdge key={key} from={from} to={to} active={activeEdges.has(key)} pathD={d} />
-              ))}
+              <defs>
+                {edgeLines.map(e => (
+                  <linearGradient key={e.key} id={`grad-${e.key}`} x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor={e.color} stopOpacity="0.8" />
+                    <stop offset="100%" stopColor="#475569" stopOpacity="0.4" />
+                  </linearGradient>
+                ))}
+              </defs>
+
+              {edgeLines.map(e => {
+                const dx = e.x2 - e.x1;
+                const dy = e.y2 - e.y1;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const offsetY = dist * 0.15;
+                const cx1 = e.x1 + dx * 0.25;
+                const cy1 = e.y1 + offsetY * (dy > 0 ? 0.5 : -0.5);
+                const cx2 = e.x2 - dx * 0.25;
+                const cy2 = e.y2 - offsetY * (dy > 0 ? 0.5 : -0.5);
+                const pathD = `M ${e.x1} ${e.y1} C ${cx1} ${cy1} ${cx2} ${cy2} ${e.x2} ${e.y2}`;
+
+                return (
+                  <g key={e.key}>
+                    {e.active && (
+                      <path
+                        d={pathD}
+                        fill="none"
+                        stroke={e.color}
+                        strokeWidth={6}
+                        strokeOpacity={0.06}
+                      />
+                    )}
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke={e.active ? `${e.color}B0` : '#1e293b'}
+                      strokeWidth={e.active ? 1.8 : 0.8}
+                      style={{ transition: 'stroke 0.4s, stroke-width 0.3s' }}
+                    />
+                    {e.active && (
+                      <path
+                        d={pathD}
+                        fill="none"
+                        stroke={e.color}
+                        strokeWidth={1.8}
+                        strokeOpacity={0.5}
+                        strokeDasharray="4 6"
+                        style={{ animation: 'dashFlow 0.8s linear infinite' }}
+                      />
+                    )}
+                    {e.active && (
+                      <circle r={2.5} fill={e.color} opacity={0.85}>
+                        <animateMotion dur="1.5s" repeatCount="indefinite" path={pathD} />
+                      </circle>
+                    )}
+                  </g>
+                );
+              })}
             </svg>
 
             {/* Agent nodes */}
@@ -579,7 +530,35 @@ export function AgentFlow() {
 
           <div ref={evtLogRef} className="flex-1 overflow-y-auto px-3 py-1">
             {events.length > 0 ? (
-              events.map(evt => <EventItem key={evt.id} evt={evt} />)
+              events.map(evt => {
+                const icon = evt.kind === 'thinking' ? '💭'
+                           : evt.kind === 'tool'     ? '⚡'
+                           : '✅';
+                return (
+                  <div key={evt.id}
+                    className="flex gap-2 py-2 border-b border-slate-800/30 last:border-0"
+                    style={{ animation: 'slideIn 0.25s ease-out' }}
+                  >
+                    <div className="text-xs mt-0.5 flex-shrink-0 opacity-60">{icon}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span
+                          className="px-1.5 py-px rounded text-[8px] font-bold"
+                          style={{ backgroundColor: `${evt.color}15`, color: evt.color }}
+                        >
+                          {evt.agent}
+                        </span>
+                        <span className="text-[9px] text-slate-600 font-mono">{evt.ts}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 leading-snug break-all"
+                         style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                      >
+                        {evt.text}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-center">
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10

@@ -67,6 +67,37 @@ export function ChatDemo() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
+  // Restore messages from localStorage when becoming visible (SPA page switch back)
+  const [isVisible, setIsVisible] = useState(true);
+  useEffect(() => {
+    const handleVisibility = () => {
+      const nowVisible = document.visibilityState === 'visible';
+      if (nowVisible && !isVisible) {
+        const id = currentInstanceIdRef.current;
+        const stored = localStorage.getItem(`chat_history_${id}`);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setMessages(prev => {
+                if (parsed.length > prev.length) return parsed;
+                const prevLast = prev[prev.length - 1];
+                const storedLast = parsed[parsed.length - 1];
+                if (prevLast?.role === 'assistant' && storedLast?.role === 'assistant') {
+                  if ((storedLast.content || '').length > (prevLast.content || '').length) return parsed;
+                }
+                return prev;
+              });
+            }
+          } catch { /* ignore */ }
+        }
+      }
+      setIsVisible(nowVisible);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [isVisible]);
+
   useEffect(() => {
     fetch('/api/instances/current')
       .then(res => res.ok ? res.json() : null)
