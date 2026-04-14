@@ -297,13 +297,12 @@ async def get_dialogue_messages():
 async def clear_dialogue_messages():
     """清空对话历史（开启新会话时调用）
 
-    立即清空对话上下文并返回，旧消息的存储在后台静默执行，不阻塞用户。
+    立即清空对话上下文，旧消息的存储通过 SSE 流式返回事件。
     """
     recall_timer.cancel()
     freeze_manager.unfreeze()
     freeze_manager.clear_queue()
 
-    # 先快照旧消息，然后立刻清空（不阻塞新对话）
     messages_to_process = []
     with dialogue_messages_lock:
         messages_to_process = [
@@ -313,26 +312,85 @@ async def clear_dialogue_messages():
         ]
         dialogue_messages.clear()
 
-    # 后台静默存储旧消息（fire-and-forget）
-    if messages_to_process:
+    if not messages_to_process:
+        async def _empty_gen():
+            yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': 0, 'memories_added': [], 'total_memories': 0}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(_empty_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+    async def _storage_generator():
+        q: asyncio.Queue = asyncio.Queue()
+        event_bus = AgentEventBus()
+        event_bus.bind_queue(q)
+        event_bus.bind_loop(asyncio.get_running_loop())
+
         def _bg_storage():
             try:
                 from src.system.storage_flow import process_user_message
 
-                total_added = 0
+                total_added = []
                 for idx, msg in enumerate(messages_to_process):
-                    result = process_user_message(msg, idx + 1)
+                    result = process_user_message(msg, idx + 1, event_bus=event_bus)
                     if result.get("success") and result.get("memories_added"):
-                        total_added += len(result["memories_added"])
+                        total_added.extend(result["memories_added"])
                 logger.info(
-                    f"[clear/bg] 后台存储完成: {len(messages_to_process)} 条消息, 新增 {total_added} 条记忆"
+                    f"[clear/bg] 后台存储完成: {len(messages_to_process)} 条消息, 新增 {len(total_added)} 条记忆"
                 )
+                transformed = []
+                for m in total_added:
+                    memory = m.get("memory", "")
+                    transformed.append({
+                        "memory_id": m.get("fingerprint", ""),
+                        "key": m.get("key", ""),
+                        "content_preview": memory[:100] + ("..." if len(memory) > 100 else ""),
+                    })
+                q.put_nowait({
+                    "type": "storage_result",
+                    "memories_added": transformed,
+                    "total_memories": len(transformed),
+                })
             except Exception as e:
                 logger.error(f"[clear/bg] 后台存储异常: {e}")
+                q.put_nowait({"type": "error", "message": str(e)})
+            finally:
+                q.put_nowait(None)
 
-        threading.Thread(target=_bg_storage, daemon=True).start()
+        t = threading.Thread(target=_bg_storage, daemon=True)
+        t.start()
 
-    return ok({"processed": len(messages_to_process), "cleared": True})
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield f": heartbeat\n\n"
+                    continue
+
+                if event is None:
+                    break
+
+                event_type = event.get("type", "")
+                if event_type == "storage_result":
+                    yield f"event: storage_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "agent_thinking":
+                    yield f"event: agent_thinking\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "agent_tool_call":
+                    yield f"event: agent_tool_call\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "agent_result":
+                    yield f"event: agent_result\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "storage_progress":
+                    yield f"event: storage_progress\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                elif event_type == "error":
+                    yield f"event: error\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            event_bus.stop_heartbeat()
+
+        yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': len(messages_to_process)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _storage_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 # @app.post("/api/chat")

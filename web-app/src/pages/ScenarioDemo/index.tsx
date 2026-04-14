@@ -273,9 +273,66 @@ export function ScenarioDemo() {
     localStorage.removeItem('memonexus_scenario_timeline');
     setStorageResult(null);
     reasoningRef.current = '';
+    setIsStreaming(true);
+
     try {
-      await fetch('/api/dialogue/clear', { method: 'POST' });
-    } catch { /* ignore */ }
+      const res = await fetch('/api/dialogue/clear', { method: 'POST' });
+      if (!res.ok || !res.body) {
+        setIsStreaming(false);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'storage_result') {
+                setStorageResult({
+                  type: 'storage_result',
+                  memories_added: data.memories_added || [],
+                  total_memories: data.total_memories || 0,
+                  duration_ms: data.duration_ms || 0,
+                });
+              } else if (eventType === 'agent_thinking') {
+                setMemoryTimeline(prev => [...prev, {
+                  id: `clear_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                  type: 'store',
+                  key: data.agent,
+                  tag: data.phase,
+                  memory: '',
+                  timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                  fingerprint: ''
+                }]);
+              } else if (eventType === 'agent_result') {
+                setMemoryTimeline(prev => {
+                  const updated = [...prev];
+                  const lastIdx = updated.findIndex(e => e.key === data.agent && e.type === 'store');
+                  if (lastIdx >= 0) {
+                    updated[lastIdx] = { ...updated[lastIdx], memory: JSON.stringify(data.result).slice(0, 200) };
+                  }
+                  return updated;
+                });
+              } else if (eventType === 'done') {
+                // storage complete
+              }
+            } catch { /* skip non-JSON lines */ }
+          }
+        }
+      }
+    } catch { /* ignore */ } finally {
+      setIsStreaming(false);
+    }
   };
 
   const handleSend = (text?: string) => {
