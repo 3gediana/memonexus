@@ -986,12 +986,6 @@ def handle_user_message_streaming(
                     reply = event["content"]
                     conversation_history.append({"role": "assistant", "content": reply})
 
-                    # 将助手的回复也存入历史档案库(sub表)
-                    from src.tools.sub_tools import insert_sub
-
-                    insert_sub(f"助手：{reply}", turn_index)
-                    append_to_session(f"助手：{reply}", turn_index)
-
                     # 后台异步调用单独的分析agent分析回复引用了哪些记忆（不计入streaming时间）
                     import threading
 
