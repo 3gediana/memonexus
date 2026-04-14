@@ -313,9 +313,19 @@ async def clear_dialogue_messages():
         dialogue_messages.clear()
 
     if not messages_to_process:
+
         async def _empty_gen():
             yield f"event: done\ndata: {json.dumps({'type': 'done', 'processed': 0, 'memories_added': [], 'total_memories': 0}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(_empty_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+        return StreamingResponse(
+            _empty_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     async def _storage_generator():
         q: asyncio.Queue = asyncio.Queue()
@@ -338,16 +348,21 @@ async def clear_dialogue_messages():
                 transformed = []
                 for m in total_added:
                     memory = m.get("memory", "")
-                    transformed.append({
-                        "memory_id": m.get("fingerprint", ""),
-                        "key": m.get("key", ""),
-                        "content_preview": memory[:100] + ("..." if len(memory) > 100 else ""),
-                    })
-                q.put_nowait({
-                    "type": "storage_result",
-                    "memories_added": transformed,
-                    "total_memories": len(transformed),
-                })
+                    transformed.append(
+                        {
+                            "memory_id": m.get("fingerprint", ""),
+                            "key": m.get("key", ""),
+                            "content_preview": memory[:100]
+                            + ("..." if len(memory) > 100 else ""),
+                        }
+                    )
+                q.put_nowait(
+                    {
+                        "type": "storage_result",
+                        "memories_added": transformed,
+                        "total_memories": len(transformed),
+                    }
+                )
             except Exception as e:
                 logger.error(f"[clear/bg] 后台存储异常: {e}")
                 q.put_nowait({"type": "error", "message": str(e)})
@@ -389,7 +404,11 @@ async def clear_dialogue_messages():
     return StreamingResponse(
         _storage_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -441,7 +460,11 @@ async def chat_stream(instance_id: str, req: ChatRequest):
                 with dialogue_messages_lock:
                     dialogue_snapshot = dialogue_messages.copy()
                 for event in handle_user_message_streaming(
-                    req.message, req.turn, dialogue_snapshot, event_bus=event_bus, persona=req.persona
+                    req.message,
+                    req.turn,
+                    dialogue_snapshot,
+                    event_bus=event_bus,
+                    persona=req.persona,
                 ):
                     count += 1
                     q.put_nowait(event)
@@ -545,7 +568,9 @@ async def chat_stream(instance_id: str, req: ChatRequest):
                                 result = process_user_message(
                                     msg, idx + 1, event_bus=event_bus
                                 )
-                                if result.get("success") and result.get("memories_added"):
+                                if result.get("success") and result.get(
+                                    "memories_added"
+                                ):
                                     total_added.extend(result["memories_added"])
                             if total_added:
                                 import time as time_module
@@ -562,7 +587,9 @@ async def chat_stream(instance_id: str, req: ChatRequest):
                                             + ("..." if len(memory) > 100 else ""),
                                         }
                                     )
-                                duration_ms = int((time_module.time() - start_time) * 1000)
+                                duration_ms = int(
+                                    (time_module.time() - start_time) * 1000
+                                )
                                 yield f"event: storage_result\ndata: {json.dumps({'type': 'storage_result', 'memories_added': transformed, 'total_memories': len(transformed), 'duration_ms': duration_ms}, ensure_ascii=False)}\n\n"
                             logger.info(
                                 f"[SSE] stored {len(queue_messages)} queued messages"
@@ -792,6 +819,7 @@ async def memory_graph_nodes(
     edge_counts = _get_memory_edge_count_lookup()
 
     engine = get_cluster_engine()
+    engine.load_clusters()
     louvain_clusters = engine._fingerprint_to_cluster or {}
 
     nodes = [
