@@ -43,6 +43,29 @@ export function ChatDemo() {
   const [currentInstanceId, setCurrentInstanceId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const messagesRef = useRef<Message[]>(messages);
+  const isStreamingRef = useRef(isStreaming);
+  const currentInstanceIdRef = useRef(currentInstanceId);
+
+  // Keep refs in sync with state
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+  useEffect(() => { currentInstanceIdRef.current = currentInstanceId; }, [currentInstanceId]);
+
+  // Save messages to localStorage aggressively when tab goes hidden (browser tab switch)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        const id = currentInstanceIdRef.current;
+        const msgs = messagesRef.current;
+        if (id && msgs.length > 0) {
+          localStorage.setItem(`chat_history_${id}`, JSON.stringify(msgs));
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
   useEffect(() => {
     fetch('/api/instances/current')
@@ -80,10 +103,22 @@ export function ChatDemo() {
     }
   }, [currentInstanceId]);
 
+  // Save on every change (already existed but ensure it's solid)
   useEffect(() => {
     if (!currentInstanceId || messages.length === 0) return;
     localStorage.setItem(`chat_history_${currentInstanceId}`, JSON.stringify(messages));
   }, [messages, currentInstanceId]);
+
+  // Cleanup: save messages on unmount
+  useEffect(() => {
+    return () => {
+      const id = currentInstanceIdRef.current;
+      const msgs = messagesRef.current;
+      if (id && msgs.length > 0) {
+        localStorage.setItem(`chat_history_${id}`, JSON.stringify(msgs));
+      }
+    };
+  }, []);
 
   const { connect, disconnect } = useStreamConnection({
     onReasoning: (delta) => {

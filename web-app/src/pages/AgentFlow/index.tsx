@@ -369,9 +369,20 @@ export function AgentFlow() {
     };
 
     connect();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && (es?.readyState === EventSource.CLOSED || !es)) {
+        es?.close();
+        clearTimeout(retryTimer);
+        connect();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       clearTimeout(retryTimer);
       es?.close();
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [setWorking, setCompleted, addEvent, showBubble, fetchStatus]);
 

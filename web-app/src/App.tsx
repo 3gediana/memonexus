@@ -79,15 +79,19 @@ function App() {
         onPageChange={setCurrentPage}
       />
 
-      {/* 主内容区 */}
-      <main className="flex-1 flex flex-col neural-grid overflow-hidden">
-        {currentPage === 'chat' && <ChatDemo />}
+      {/* 主内容区 - ChatDemo和AgentFlow保持挂载以保留流式连接状态 */}
+      <main className="flex-1 neural-grid overflow-hidden relative">
+        <div className={`absolute inset-0 ${currentPage === 'chat' ? 'z-10 visible' : 'z-0 invisible pointer-events-none'}`}>
+          <ChatDemo />
+        </div>
+        <div className={`absolute inset-0 ${currentPage === 'agent' ? 'z-10 visible' : 'z-0 invisible pointer-events-none'}`}>
+          <AgentFlow />
+        </div>
         {currentPage === 'scenario' && <ScenarioDemo />}
         {currentPage === 'stats' && <StatsDashboard />}
         {currentPage === 'memory' && <MemoryList />}
         {currentPage === 'knowledge' && <KnowledgeBase />}
         {currentPage === 'graph' && <MemoryGraph />}
-        {currentPage === 'agent' && <AgentFlow />}
         {currentPage === 'settings' && <Settings currentInstance={currentInstance?.name} />}
         {currentPage === 'sub' && <Sub />}
       </main>
